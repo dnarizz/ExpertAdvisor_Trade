@@ -1,17 +1,23 @@
 //+------------------------------------------------------------------+
-//| MomenCandleStreak_Ultimate.mq5                                   |
-//| Strategi: 3 candle H-berturut searah -> entry searah momentum   |
-//| (Three White Soldiers / Three Black Crows, versi naif tanpa      |
-//| filter, sesuai permintaan eksplisit user)                        |
+//| MomenCandleStreak_Ultimate_V1.1.mq5                |
+//| Versi 1.1: SL otomatis di high/low candle PERTAMA dari streak,     |
+//| TP unlimited, trailing stop step-wise berbasis kelipatan R.      |
+//|                                                                    |
+//| LOGIKA TRAILING (wajib dipahami sebelum live):                   |
+//|   R = jarak awal entry ke SL awal                                 |
+//|   Floating profit >= 2R -> SL pindah ke Breakeven (0R)           |
+//|   Floating profit >= 3R -> SL pindah ke 1R                        |
+//|   Floating profit >= 4R -> SL pindah ke 2R, dst (step = N-2)      |
+//|   SL HANYA bergerak searah profit, tidak pernah mundur.           |
 //|                                                                    |
 //| CATATAN WAJIB:                                                    |
-//| - TANPA FILTER berarti sinyal akan trigger di choppy market juga |
-//|   -- ini bukan bug, ini konsekuensi dari spesifikasi yang dipilih.|
 //| - Belum divalidasi backtest historis riil.                       |
-//| - Fixed SL/TP dalam points, tidak menyesuaikan volatilitas.       |
+//| - "TP unlimited" berarti profit hanya dibatasi oleh kapan harga  |
+//|   berbalik menyentuh trailing SL -- bukan tanpa risiko, hanya    |
+//|   tanpa batas atas.                                               |
 //+------------------------------------------------------------------+
 #property copyright "Custom EA - Educational/Experimental Use"
-#property version   "1.00"
+#property version   "2.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -19,20 +25,23 @@ CTrade trade;
 
 //================== INPUT ==================
 input group "=== Cakupan Symbol & Timeframe ==="
-input string SymbolList          = "US100,EURUSD,XAUUSD"; // pisahkan koma, tanpa spasi
-input string TimeframeList       = "H4,H1";                // M15,M30,H1,H4,D1
+input string SymbolList          = "US100,EURUSD,XAUUSD";
+input string TimeframeList       = "H4,H1";
 
 input group "=== Strategi ==="
-input int    StreakCount         = 3;      // jumlah candle berurutan searah yang dipersyaratkan
+input int    StreakCount         = 3;
 
-input group "=== Lot & Risk (Fixed SL/TP) ==="
+input group "=== Lot ==="
 input bool   UseStaticLot        = true;
-input double StaticLotSize       = 0.01;   // EDIT MANUAL di sini jika UseStaticLot = true
-input double RiskPercentPerTrade = 1.0;    // dipakai jika UseStaticLot = false
-input double SL_Points           = 300;    // fixed, dalam points (sesuaikan per instrumen manual)
-input double TP_Points           = 600;    // fixed, dalam points
+input double StaticLotSize       = 0.01;
+input double RiskPercentPerTrade = 1.0;   // dipakai jika UseStaticLot = false
 
-input group "=== Filter Umum (opsional, di luar filter sinyal candle) ==="
+input group "=== SL Otomatis & Trailing ==="
+input double SL_BufferPoints     = 0;     // buffer tambahan di bawah/atas candle pertama, 0 = tepat di high/low
+input double TrailStartRR        = 2.0;   // mulai trailing (pindah ke BEP) saat profit = X * R
+input double TrailStepRR         = 1.0;   // tiap kenaikan profit sebesar ini (dalam R), SL maju 1 step (mundur TrailStartRR)
+
+input group "=== Filter Umum ==="
 input bool   UseSpreadFilter     = true;
 input double MaxSpreadPoints     = 300;
 input bool   UseSessionFilter    = true;
@@ -40,6 +49,7 @@ input int    AvoidStartHour      = 23;
 input int    AvoidEndHour        = 1;
 input bool   OnePositionPerSymbol = true;
 input int    MaxTotalOpenPositions = 5;
+input int    MagicNumber          = 777001;
 
 //================== STRUCT & GLOBAL ==================
 struct SymTFState
@@ -54,8 +64,7 @@ SymTFState g_states[];
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   string symbols[];
-   string tfs[];
+   string symbols[]; string tfs[];
    int nSym = StringSplit(SymbolList, ',', symbols);
    int nTf  = StringSplit(TimeframeList, ',', tfs);
 
@@ -72,13 +81,11 @@ int OnInit()
      {
       string sym = symbols[s];
       StringTrimLeft(sym); StringTrimRight(sym);
-
       if(!SymbolSelect(sym, true))
         {
-         Print("WARNING: Symbol '", sym, "' tidak ditemukan di broker, dilewati.");
+         Print("WARNING: Symbol '", sym, "' tidak ditemukan, dilewati.");
          continue;
         }
-
       for(int t=0; t<nTf; t++)
         {
          string tfStr = tfs[t];
@@ -89,7 +96,6 @@ int OnInit()
             Print("WARNING: Timeframe '", tfStr, "' tidak dikenali, dilewati.");
             continue;
            }
-
          g_states[idx].symbol = sym;
          g_states[idx].tf = tf;
          g_states[idx].lastBarTime = 0;
@@ -98,14 +104,10 @@ int OnInit()
      }
 
    ArrayResize(g_states, idx);
-   Print("EA aktif untuk ", idx, " kombinasi symbol/timeframe. Streak requirement: ", StreakCount, " candle.");
+   Print("EA v2 aktif untuk ", idx, " kombinasi symbol/timeframe.");
+   if(idx == 0) { Print("ERROR: Tidak ada kombinasi valid."); return(INIT_FAILED); }
 
-   if(idx == 0)
-     {
-      Print("ERROR: Tidak ada kombinasi symbol/timeframe valid. EA berhenti.");
-      return(INIT_FAILED);
-     }
-
+   trade.SetExpertMagicNumber(MagicNumber);
    return(INIT_SUCCEEDED);
   }
 
@@ -126,6 +128,9 @@ ENUM_TIMEFRAMES StringToTimeframe(string s)
 //+------------------------------------------------------------------+
 void OnTick()
   {
+   // Trailing dievaluasi TIAP TICK (bukan hanya candle baru) agar responsif
+   ManageTrailingStop();
+
    if(PositionsTotal() >= MaxTotalOpenPositions) return;
 
    for(int i=0; i<ArraySize(g_states); i++)
@@ -142,29 +147,22 @@ void OnTick()
       if(OnePositionPerSymbol && PositionSelect(sym)) continue;
 
       int signal = EvaluateStreak(sym, tf);
-      if(signal == 1)  ExecuteTrade(sym, ORDER_TYPE_BUY);
-      if(signal == -1) ExecuteTrade(sym, ORDER_TYPE_SELL);
+      if(signal == 1)  ExecuteTrade(sym, tf, ORDER_TYPE_BUY);
+      if(signal == -1) ExecuteTrade(sym, tf, ORDER_TYPE_SELL);
      }
   }
 
 //+------------------------------------------------------------------+
-//| Evaluasi streak N candle berurutan searah (murni tanpa filter)  |
-//| Candle index 1 = candle terakhir yang closed, dst.               |
-//| return 1 = buy, -1 = sell, 0 = none                              |
-//+------------------------------------------------------------------+
 int EvaluateStreak(string sym, ENUM_TIMEFRAMES tf)
   {
    bool allGreen = true, allRed = true;
-
    for(int i=1; i<=StreakCount; i++)
      {
       double o = iOpen(sym, tf, i);
       double c = iClose(sym, tf, i);
-
-      if(c <= o) allGreen = false; // candle ini bukan hijau (close > open)
-      if(c >= o) allRed = false;   // candle ini bukan merah (close < open)
+      if(c <= o) allGreen = false;
+      if(c >= o) allRed = false;
      }
-
    if(allGreen) return 1;
    if(allRed)   return -1;
    return 0;
@@ -210,36 +208,102 @@ double CalculateDynamicLot(string sym, double slPoints)
   }
 
 //+------------------------------------------------------------------+
-void ExecuteTrade(string sym, ENUM_ORDER_TYPE type)
+//| Entry: SL = high/low candle PERTAMA dari streak (index tertua)  |
+//| Komentar posisi menyimpan R (jarak SL awal) untuk trailing.     |
+//+------------------------------------------------------------------+
+void ExecuteTrade(string sym, ENUM_TIMEFRAMES tf, ENUM_ORDER_TYPE type)
   {
    double point = SymbolInfoDouble(sym, SYMBOL_POINT);
    double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
    double bid = SymbolInfoDouble(sym, SYMBOL_BID);
 
-   double sl, tp, entry;
+   int firstCandleIdx = StreakCount; // candle tertua dalam streak
+   double sl, entry, R;
 
    if(type == ORDER_TYPE_BUY)
      {
       entry = ask;
-      sl = entry - SL_Points*point;
-      tp = entry + TP_Points*point;
+      sl = iLow(sym, tf, firstCandleIdx) - SL_BufferPoints*point;
+      R = entry - sl;
      }
    else
      {
       entry = bid;
-      sl = entry + SL_Points*point;
-      tp = entry - TP_Points*point;
+      sl = iHigh(sym, tf, firstCandleIdx) + SL_BufferPoints*point;
+      R = sl - entry;
      }
 
-   double lot = UseStaticLot ? StaticLotSize : CalculateDynamicLot(sym, SL_Points);
+   if(R <= 0) { Print("SL invalid untuk ", sym, ", skip trade."); return; }
+
+   double slPoints = R/point;
+   double lot = UseStaticLot ? StaticLotSize : CalculateDynamicLot(sym, slPoints);
    double minLot=SymbolInfoDouble(sym,SYMBOL_VOLUME_MIN);
    double maxLot=SymbolInfoDouble(sym,SYMBOL_VOLUME_MAX);
    lot = MathMax(minLot, MathMin(maxLot, lot));
 
-   trade.SetExpertMagicNumber(654321);
+   // Simpan R di comment untuk dipakai fungsi trailing (TP=0, unlimited)
+   string cmt = "S3v2|" + DoubleToString(R, _Digits);
+
    if(type == ORDER_TYPE_BUY)
-      trade.Buy(lot, sym, entry, sl, tp, "Streak3_Buy_"+sym);
+      trade.Buy(lot, sym, entry, sl, 0, cmt);
    else
-      trade.Sell(lot, sym, entry, sl, tp, "Streak3_Sell_"+sym);
+      trade.Sell(lot, sym, entry, sl, 0, cmt);
+  }
+
+//+------------------------------------------------------------------+
+//| Trailing Stop Step-wise berbasis kelipatan R                    |
+//| profit >= 2R -> SL di BEP (0R)                                    |
+//| profit >= 3R -> SL di 1R, profit >= 4R -> SL di 2R, dst           |
+//+------------------------------------------------------------------+
+void ManageTrailingStop()
+  {
+   for(int i=PositionsTotal()-1; i>=0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+      string sym = PositionGetString(POSITION_SYMBOL);
+      string cmt = PositionGetString(POSITION_COMMENT);
+
+      // Parse R dari comment "S3v2|<R>"
+      int sep = StringFind(cmt, "|");
+      if(sep < 0) continue;
+      double R = StringToDouble(StringSubstr(cmt, sep+1));
+      if(R <= 0) continue;
+
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      long type = PositionGetInteger(POSITION_TYPE);
+
+      double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+      double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+
+      double profitR;
+      if(type == POSITION_TYPE_BUY)
+         profitR = (bid - entry) / R;
+      else
+         profitR = (entry - ask) / R;
+
+      if(profitR < TrailStartRR) continue; // belum capai ambang trailing pertama (2R)
+
+      // step level: berapa kali TrailStepRR sudah terlampaui SETELAH TrailStartRR
+      double stepsPassed = MathFloor((profitR - TrailStartRR) / TrailStepRR);
+      double lockedR = stepsPassed * TrailStepRR; // 0 = BEP, 1 = 1R, 2 = 2R, dst
+
+      double newSL;
+      if(type == POSITION_TYPE_BUY)
+        {
+         newSL = entry + lockedR * R;
+         if(newSL > currentSL) // hanya maju, tidak pernah mundur
+            trade.PositionModify(ticket, newSL, 0);
+        }
+      else
+        {
+         newSL = entry - lockedR * R;
+         if(currentSL == 0 || newSL < currentSL)
+            trade.PositionModify(ticket, newSL, 0);
+        }
+     }
   }
 //+------------------------------------------------------------------+

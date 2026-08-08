@@ -1,126 +1,52 @@
 //+------------------------------------------------------------------+
-//| MomenCandleStreak_Ultimate.mq5                                   |
-//| Strategi: 3 candle H-berturut searah -> entry searah momentum   |
-//| (Three White Soldiers / Three Black Crows, versi naif tanpa      |
-//| filter, sesuai permintaan eksplisit user)                        |
-//|                                                                    |
-//| CATATAN WAJIB:                                                    |
-//| - TANPA FILTER berarti sinyal akan trigger di choppy market juga |
-//|   -- ini bukan bug, ini konsekuensi dari spesifikasi yang dipilih.|
-//| - Belum divalidasi backtest historis riil.                       |
-//| - Fixed SL/TP dalam points, tidak menyesuaikan volatilitas.       |
+//| MomenCandleStreak_Ultimate_V2.2.mq5                      |
+//| Base: v2.1 Layering dengan Auto-Filling & Tester Protection        |
 //+------------------------------------------------------------------+
 #property copyright "Custom EA - Educational/Experimental Use"
-#property version   "1.00"
+#property version   "7.20"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //================== INPUT ==================
-input group "=== Cakupan Symbol & Timeframe ==="
-input string SymbolList          = "US100,EURUSD,XAUUSD"; // pisahkan koma, tanpa spasi
-input string TimeframeList       = "H4,H1";                // M15,M30,H1,H4,D1
+input group "=== Strategi & Layering ==="
+input int    StreakCount         = 2;
+input double RetracePercent      = 0.50; // Retrace x% dari candle kedua (50% = 0.50)
+input int    MaxConsecutiveTrades= 3;    // Maksimal 3x trade berurutan
 
-input group "=== Strategi ==="
-input int    StreakCount         = 3;      // jumlah candle berurutan searah yang dipersyaratkan
-
-input group "=== Lot & Risk (Fixed SL/TP) ==="
+input group "=== Lot (Static Default) ==="
 input bool   UseStaticLot        = true;
-input double StaticLotSize       = 0.01;   // EDIT MANUAL di sini jika UseStaticLot = true
-input double RiskPercentPerTrade = 1.0;    // dipakai jika UseStaticLot = false
-input double SL_Points           = 300;    // fixed, dalam points (sesuaikan per instrumen manual)
-input double TP_Points           = 600;    // fixed, dalam points
+input double StaticLotSize       = 0.01;
+input double RiskPercentPerTrade = 1.0;  // Nonaktif jika UseStaticLot = true
 
-input group "=== Filter Umum (opsional, di luar filter sinyal candle) ==="
-input bool   UseSpreadFilter     = true;
-input double MaxSpreadPoints     = 300;
-input bool   UseSessionFilter    = true;
-input int    AvoidStartHour      = 23;
-input int    AvoidEndHour        = 1;
-input bool   OnePositionPerSymbol = true;
-input int    MaxTotalOpenPositions = 5;
+input group "=== Target TP & SL ==="
+input double SL_BufferPoints     = 0;    // SL di Open Candle Pertama (0 Buffer)
+input double RiskRewardRatio     = 1.0;  // TP Layer 1 (1:1 RR)
 
-//================== STRUCT & GLOBAL ==================
-struct SymTFState
-  {
-   string           symbol;
-   ENUM_TIMEFRAMES  tf;
-   datetime         lastBarTime;
-  };
+input group "=== Filter Umum ==="
+input bool   UseSpreadFilter     = false;// Matikan filter spread saat backtest
+input double MaxSpreadPoints     = 5000;
+input int    MaxTotalOpenPositions = 10;
+input int    MagicNumber         = 777007;
 
-SymTFState g_states[];
+//================== GLOBAL VARIABLES ==================
+datetime g_lastBarTime = 0;
+int      g_consecutiveTrades = 0;
 
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   string symbols[];
-   string tfs[];
-   int nSym = StringSplit(SymbolList, ',', symbols);
-   int nTf  = StringSplit(TimeframeList, ',', tfs);
+   trade.SetExpertMagicNumber(MagicNumber);
+   
+   // Auto-detect Order Filling Mode yang didukung Broker/Tester
+   SetAutoFillingType(_Symbol);
 
-   if(nSym <= 0 || nTf <= 0)
-     {
-      Print("ERROR: SymbolList atau TimeframeList kosong/invalid.");
-      return(INIT_FAILED);
-     }
-
-   ArrayResize(g_states, nSym * nTf);
-   int idx = 0;
-
-   for(int s=0; s<nSym; s++)
-     {
-      string sym = symbols[s];
-      StringTrimLeft(sym); StringTrimRight(sym);
-
-      if(!SymbolSelect(sym, true))
-        {
-         Print("WARNING: Symbol '", sym, "' tidak ditemukan di broker, dilewati.");
-         continue;
-        }
-
-      for(int t=0; t<nTf; t++)
-        {
-         string tfStr = tfs[t];
-         StringTrimLeft(tfStr); StringTrimRight(tfStr);
-         ENUM_TIMEFRAMES tf = StringToTimeframe(tfStr);
-         if(tf == PERIOD_CURRENT)
-           {
-            Print("WARNING: Timeframe '", tfStr, "' tidak dikenali, dilewati.");
-            continue;
-           }
-
-         g_states[idx].symbol = sym;
-         g_states[idx].tf = tf;
-         g_states[idx].lastBarTime = 0;
-         idx++;
-        }
-     }
-
-   ArrayResize(g_states, idx);
-   Print("EA aktif untuk ", idx, " kombinasi symbol/timeframe. Streak requirement: ", StreakCount, " candle.");
-
-   if(idx == 0)
-     {
-      Print("ERROR: Tidak ada kombinasi symbol/timeframe valid. EA berhenti.");
-      return(INIT_FAILED);
-     }
-
+   Print("=== EA v7 INITIALIZED ===");
+   Print("Symbol: ", _Symbol, " | TF: ", EnumToString(_Period));
+   Print("Layer 1: Market (RR ", RiskRewardRatio, ") | Layer 2: Retrace ", RetracePercent*100, "%");
+   
    return(INIT_SUCCEEDED);
-  }
-
-//+------------------------------------------------------------------+
-ENUM_TIMEFRAMES StringToTimeframe(string s)
-  {
-   if(s=="M1")  return PERIOD_M1;
-   if(s=="M5")  return PERIOD_M5;
-   if(s=="M15") return PERIOD_M15;
-   if(s=="M30") return PERIOD_M30;
-   if(s=="H1")  return PERIOD_H1;
-   if(s=="H4")  return PERIOD_H4;
-   if(s=="D1")  return PERIOD_D1;
-   if(s=="W1")  return PERIOD_W1;
-   return PERIOD_CURRENT;
   }
 
 //+------------------------------------------------------------------+
@@ -128,60 +54,58 @@ void OnTick()
   {
    if(PositionsTotal() >= MaxTotalOpenPositions) return;
 
-   for(int i=0; i<ArraySize(g_states); i++)
+   datetime currentBarTime = iTime(_Symbol, _Period, 0);
+   if(currentBarTime == g_lastBarTime) return; // Hanya jalankan saat candle baru terbuka
+   g_lastBarTime = currentBarTime;
+
+   // Hapus pending order Layer 2 yang belum tersentuh dari candle sebelumnya
+   DeleteStalePendingOrders(_Symbol);
+
+   // Cek Spread jika diaktifkan
+   if(UseSpreadFilter && IsSpreadHigh(_Symbol))
      {
-      string sym = g_states[i].symbol;
-      ENUM_TIMEFRAMES tf = g_states[i].tf;
-
-      datetime currentBarTime = iTime(sym, tf, 0);
-      if(currentBarTime == g_states[i].lastBarTime) continue;
-      g_states[i].lastBarTime = currentBarTime;
-
-      if(UseSessionFilter && IsAvoidSession()) continue;
-      if(UseSpreadFilter && IsSpreadHigh(sym)) continue;
-      if(OnePositionPerSymbol && PositionSelect(sym)) continue;
-
-      int signal = EvaluateStreak(sym, tf);
-      if(signal == 1)  ExecuteTrade(sym, ORDER_TYPE_BUY);
-      if(signal == -1) ExecuteTrade(sym, ORDER_TYPE_SELL);
+      Print("Skip: Spread terlalu tinggi pada ", _Symbol);
+      return;
      }
+
+   int signal = EvaluateStreak(_Symbol, _Period);
+
+   // Jika tidak ada streak (misal candle selang-seling), reset hitungan sekuensial
+   if(signal == 0)
+     {
+      g_consecutiveTrades = 0;
+      return;
+     }
+
+   // Cek Batasan Sekuensial Max Trade Berurutan
+   if(g_consecutiveTrades >= MaxConsecutiveTrades)
+     {
+      Print("Skip: Mencapai batas maks ", MaxConsecutiveTrades, " trade sekuensial.");
+      return;
+     }
+
+   // Eksekusi Trade
+   if(signal == 1)  ExecuteLayeredTrade(_Symbol, _Period, ORDER_TYPE_BUY, currentBarTime);
+   if(signal == -1) ExecuteLayeredTrade(_Symbol, _Period, ORDER_TYPE_SELL, currentBarTime);
   }
 
-//+------------------------------------------------------------------+
-//| Evaluasi streak N candle berurutan searah (murni tanpa filter)  |
-//| Candle index 1 = candle terakhir yang closed, dst.               |
-//| return 1 = buy, -1 = sell, 0 = none                              |
 //+------------------------------------------------------------------+
 int EvaluateStreak(string sym, ENUM_TIMEFRAMES tf)
   {
    bool allGreen = true, allRed = true;
-
    for(int i=1; i<=StreakCount; i++)
      {
       double o = iOpen(sym, tf, i);
       double c = iClose(sym, tf, i);
-
-      if(c <= o) allGreen = false; // candle ini bukan hijau (close > open)
-      if(c >= o) allRed = false;   // candle ini bukan merah (close < open)
+      if(c <= o) allGreen = false;
+      if(c >= o) allRed = false;
      }
-
    if(allGreen) return 1;
    if(allRed)   return -1;
    return 0;
   }
 
 //+------------------------------------------------------------------+
-bool IsAvoidSession()
-  {
-   MqlDateTime dt;
-   TimeToStruct(TimeCurrent(), dt);
-   int h = dt.hour;
-   if(AvoidStartHour <= AvoidEndHour)
-      return (h >= AvoidStartHour && h < AvoidEndHour);
-   else
-      return (h >= AvoidStartHour || h < AvoidEndHour);
-  }
-
 bool IsSpreadHigh(string sym)
   {
    double spreadPoints = (double)SymbolInfoInteger(sym, SYMBOL_SPREAD);
@@ -189,57 +113,114 @@ bool IsSpreadHigh(string sym)
   }
 
 //+------------------------------------------------------------------+
-double CalculateDynamicLot(string sym, double slPoints)
+void DeleteStalePendingOrders(string sym)
   {
-   double riskAmount = AccountInfoDouble(ACCOUNT_BALANCE) * (RiskPercentPerTrade/100.0);
-   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
-   double point     = SymbolInfoDouble(sym, SYMBOL_POINT);
-   if(tickValue<=0 || tickSize<=0 || point<=0) return SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   for(int i=OrdersTotal()-1; i>=0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(!OrderSelect(ticket)) continue;
+      if(OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+      if(OrderGetString(ORDER_SYMBOL) != sym) continue;
 
-   double valuePerPoint = tickValue * (point/tickSize);
-   double lot = riskAmount / (slPoints * valuePerPoint);
-
-   double minLot=SymbolInfoDouble(sym,SYMBOL_VOLUME_MIN);
-   double maxLot=SymbolInfoDouble(sym,SYMBOL_VOLUME_MAX);
-   double lotStep=SymbolInfoDouble(sym,SYMBOL_VOLUME_STEP);
-   lot = MathFloor(lot/lotStep)*lotStep;
-   if(lot<minLot) lot=minLot;
-   if(lot>maxLot) lot=maxLot;
-   return lot;
+      ENUM_ORDER_TYPE otype = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(otype == ORDER_TYPE_BUY_LIMIT || otype == ORDER_TYPE_SELL_LIMIT)
+         trade.OrderDelete(ticket);
+     }
   }
 
 //+------------------------------------------------------------------+
-void ExecuteTrade(string sym, ENUM_ORDER_TYPE type)
+void SetAutoFillingType(string sym)
+  {
+   uint filling = (uint)SymbolInfoInteger(sym, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+      trade.SetTypeFilling(ORDER_FILLING_FOK);
+   else if((filling & SYMBOL_FILLING_IOC) != 0)
+      trade.SetTypeFilling(ORDER_FILLING_IOC);
+   else
+      trade.SetTypeFilling(ORDER_FILLING_RETURN);
+  }
+
+//+------------------------------------------------------------------+
+void ExecuteLayeredTrade(string sym, ENUM_TIMEFRAMES tf, ENUM_ORDER_TYPE type, datetime barTime)
   {
    double point = SymbolInfoDouble(sym, SYMBOL_POINT);
-   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+   double ask   = SymbolInfoDouble(sym, SYMBOL_ASK);
+   double bid   = SymbolInfoDouble(sym, SYMBOL_BID);
 
-   double sl, tp, entry;
-
-   if(type == ORDER_TYPE_BUY)
+   if(point <= 0 || ask <= 0 || bid <= 0)
      {
-      entry = ask;
-      sl = entry - SL_Points*point;
-      tp = entry + TP_Points*point;
+      Print("Error: Harga/Point tidak valid pada ", sym);
+      return;
+     }
+
+   int firstCandleIdx = StreakCount; 
+
+   double h1 = iHigh(sym, tf, 1);
+   double l1 = iLow(sym, tf, 1);
+   double range1 = h1 - l1;
+   if(range1 <= 0) return;
+
+   // SL diambil dari Open candle lompatan pertama (Candle StreakCount)
+   double slLevel = iOpen(sym, tf, firstCandleIdx);
+
+   // --- LAYER 1: Market Order Instant ---
+   double entryL1 = (type == ORDER_TYPE_BUY) ? ask : bid;
+   double slL1    = (type == ORDER_TYPE_BUY) ? (slLevel - SL_BufferPoints*point) : (slLevel + SL_BufferPoints*point);
+   double R1      = (type == ORDER_TYPE_BUY) ? (entryL1 - slL1) : (slL1 - entryL1);
+
+   if(R1 > 0)
+     {
+      double tpL1  = (type == ORDER_TYPE_BUY) ? (entryL1 + R1 * RiskRewardRatio) : (entryL1 - R1 * RiskRewardRatio);
+      
+      bool res = false;
+      if(type == ORDER_TYPE_BUY)
+         res = trade.Buy(StaticLotSize, sym, entryL1, slL1, tpL1, "S7_L1");
+      else
+         res = trade.Sell(StaticLotSize, sym, entryL1, slL1, tpL1, "S7_L1");
+
+      if(res)
+        {
+         g_consecutiveTrades++;
+         Print("SUCCESS: Layer 1 Terbuka. Streak Berurutan ke-", g_consecutiveTrades);
+        }
+      else
+        {
+         Print("ERROR: Gagal Buka Layer 1. Retcode: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+        }
      }
    else
      {
-      entry = bid;
-      sl = entry + SL_Points*point;
-      tp = entry - TP_Points*point;
+      Print("Skip Trade: Nilai R1 <= 0 (Entry: ", entryL1, " | SL: ", slL1, ")");
      }
 
-   double lot = UseStaticLot ? StaticLotSize : CalculateDynamicLot(sym, SL_Points);
-   double minLot=SymbolInfoDouble(sym,SYMBOL_VOLUME_MIN);
-   double maxLot=SymbolInfoDouble(sym,SYMBOL_VOLUME_MAX);
-   lot = MathMax(minLot, MathMin(maxLot, lot));
+   // --- LAYER 2: Pending Limit Order (Retrace x% Candle 1) ---
+   double limitPriceL2, tpL2, slL2, R2;
 
-   trade.SetExpertMagicNumber(654321);
    if(type == ORDER_TYPE_BUY)
-      trade.Buy(lot, sym, entry, sl, tp, "Streak3_Buy_"+sym);
-   else
-      trade.Sell(lot, sym, entry, sl, tp, "Streak3_Sell_"+sym);
+     {
+      limitPriceL2 = h1 - RetracePercent * range1;
+      slL2         = slLevel - SL_BufferPoints*point;
+      tpL2         = h1; // TP Layer 2 di High Candle Lompatan Kedua
+      R2           = limitPriceL2 - slL2;
+
+      if(R2 > 0 && limitPriceL2 < ask)
+        {
+         datetime expr = barTime + PeriodSeconds(tf);
+         trade.BuyLimit(StaticLotSize, limitPriceL2, sym, slL2, tpL2, ORDER_TIME_SPECIFIED, expr, "S7_L2");
+        }
+     }
+   else // SELL
+     {
+      limitPriceL2 = l1 + RetracePercent * range1;
+      slL2         = slLevel + SL_BufferPoints*point;
+      tpL2         = l1; // TP Layer 2 di Low Candle Lompatan Kedua
+      R2           = slL2 - limitPriceL2;
+
+      if(R2 > 0 && limitPriceL2 > bid)
+        {
+         datetime expr = barTime + PeriodSeconds(tf);
+         trade.SellLimit(StaticLotSize, limitPriceL2, sym, slL2, tpL2, ORDER_TIME_SPECIFIED, expr, "S7_L2");
+        }
+     }
   }
 //+------------------------------------------------------------------+

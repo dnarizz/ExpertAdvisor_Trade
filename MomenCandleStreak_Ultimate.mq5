@@ -68,7 +68,7 @@ input bool   TradeFriday         = true;
 
 input group "=== Filter Umum ==="
 input bool   UseSpreadFilter     = false;
-input double MaxSpreadPoints     = 1000;
+input double MaxSpreadPoints     = 500;
 input bool   OnePositionPerSymbol= false;
 input int    MaxTotalOpenPositions = 10;
 input int    MagicNumber         = 777007;

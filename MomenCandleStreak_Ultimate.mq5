@@ -22,7 +22,7 @@ input string TimeframeList       = "H1";
 input group "=== Strategi & Layering ==="
 input int    StreakCount         = 2;
 input double RetracePercent      = 0; // Retrace x% dari candle kedua (50% = 0.50)
-input int    MaxConsecutiveTrades= 3;    // Batas maksimal trade berurutan
+input int    MaxConsecutiveTrades= 4;    // Batas maksimal trade berurutan
 
 input group "=== Lot Management ==="
 input bool   UseStaticLot        = true;
@@ -40,7 +40,7 @@ input double TrailStepPercent    = 10.0;
 
 input group "=== SL Static (Override) ==="
 input bool   UseStaticSL         = true; // true = pakai StaticSLPoints, bypass logic Open-candle & cap
-input double StaticSLPoints      = 30000;  // jarak SL fixed dalam point, dipakai kalau UseStaticSL=true
+input double StaticSLPoints      = 25000;  // jarak SL fixed dalam point, dipakai kalau UseStaticSL=true
 
 input group "=== Weekend Close ==="
 input bool   UseWeekendClose     = true;

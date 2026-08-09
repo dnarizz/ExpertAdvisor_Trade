@@ -3,7 +3,10 @@
 //| Base: v2.3 + Max SL Capping Mechanism                           |
 //+------------------------------------------------------------------+
 #property copyright "Custom EA - Educational/Experimental Use"
-#property version   "7.60"
+#property version   "7.61"
+// v7.61 fix: (1) R kembali ke comment order -> trailing tak lagi silent-broken
+// (2) StringToTimeframe validasi ketat, typo di-skip+warning, tak fallback diam2
+// (3) SetAutoFillingType redundant di OnInit dihapus
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -71,20 +74,28 @@ int OnInit()
      {
       string sym = symbols[s];
       StringTrimLeft(sym); StringTrimRight(sym);
-      if(!SymbolSelect(sym, true)) continue;
+      if(!SymbolSelect(sym, true))
+        {
+         Print("WARNING: Symbol '", sym, "' tidak ditemukan, dilewati.");
+         continue;
+        }
 
       for(int t=0; t<nTf; t++)
         {
          string tfStr = tfs[t];
          StringTrimLeft(tfStr); StringTrimRight(tfStr);
-         ENUM_TIMEFRAMES tf = StringToTimeframe(tfStr);
+         bool validTf;
+         ENUM_TIMEFRAMES tf = StringToTimeframe(tfStr, validTf);
+         if(!validTf)
+           {
+            Print("WARNING: Timeframe '", tfStr, "' tidak dikenali, dilewati (BUKAN fallback diam-diam).");
+            continue;
+           }
 
          g_states[idx].symbol = sym;
          g_states[idx].tf = tf;
          g_states[idx].lastBarTime = 0;
          g_states[idx].consecutiveTrades = 0;
-         
-         SetAutoFillingType(sym);
          idx++;
         }
      }
@@ -96,8 +107,9 @@ int OnInit()
   }
 
 //+------------------------------------------------------------------+
-ENUM_TIMEFRAMES StringToTimeframe(string s)
+ENUM_TIMEFRAMES StringToTimeframe(string s, bool &valid)
   {
+   valid = true;
    if(s=="M1")  return PERIOD_M1;
    if(s=="M5")  return PERIOD_M5;
    if(s=="M15") return PERIOD_M15;
@@ -107,7 +119,8 @@ ENUM_TIMEFRAMES StringToTimeframe(string s)
    if(s=="D1")  return PERIOD_D1;
    if(s=="W1")  return PERIOD_W1;
    if(s=="MN1") return PERIOD_MN1;
-   return _Period;
+   valid = false;
+   return PERIOD_CURRENT;
   }
 
 //+------------------------------------------------------------------+
@@ -306,8 +319,8 @@ bool ExecuteLayeredTrade(string sym, ENUM_TIMEFRAMES tf, ENUM_ORDER_TYPE type, d
       double lotL1 = UseStaticLot ? NormalizeLot(sym, StaticLotSize) : CalculateDynamicLot(sym, R1/point);
 
       bool resL1 = (type == ORDER_TYPE_BUY) ? 
-                   trade.Buy(lotL1, sym, entryL1, slL1, tpL1, "S7_L1") : 
-                   trade.Sell(lotL1, sym, entryL1, slL1, tpL1, "S7_L1");
+                   trade.Buy(lotL1, sym, entryL1, slL1, tpL1, "S7_L1|"+DoubleToString(R1,_Digits)) : 
+                   trade.Sell(lotL1, sym, entryL1, slL1, tpL1, "S7_L1|"+DoubleToString(R1,_Digits));
 
       if(resL1) anyExecuted = true;
       else Print("Error Layer 1 [", sym, "]: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
@@ -328,7 +341,7 @@ bool ExecuteLayeredTrade(string sym, ENUM_TIMEFRAMES tf, ENUM_ORDER_TYPE type, d
          double lotL2  = UseStaticLot ? NormalizeLot(sym, StaticLotSize) : CalculateDynamicLot(sym, R2/point);
          datetime expr = barTime + PeriodSeconds(tf);
          
-         if(trade.BuyLimit(lotL2, limitPriceL2, sym, slL2, tpL2, ORDER_TIME_SPECIFIED, expr, "S7_L2"))
+         if(trade.BuyLimit(lotL2, limitPriceL2, sym, slL2, tpL2, ORDER_TIME_SPECIFIED, expr, "S7_L2|"+DoubleToString(R2,_Digits)))
             anyExecuted = true;
         }
      }
@@ -344,7 +357,7 @@ bool ExecuteLayeredTrade(string sym, ENUM_TIMEFRAMES tf, ENUM_ORDER_TYPE type, d
          double lotL2  = UseStaticLot ? NormalizeLot(sym, StaticLotSize) : CalculateDynamicLot(sym, R2/point);
          datetime expr = barTime + PeriodSeconds(tf);
          
-         if(trade.SellLimit(lotL2, limitPriceL2, sym, slL2, tpL2, ORDER_TIME_SPECIFIED, expr, "S7_L2"))
+         if(trade.SellLimit(lotL2, limitPriceL2, sym, slL2, tpL2, ORDER_TIME_SPECIFIED, expr, "S7_L2|"+DoubleToString(R2,_Digits)))
             anyExecuted = true;
         }
      }

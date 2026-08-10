@@ -1,517 +1,338 @@
 //+------------------------------------------------------------------+
-//| MomenCandleStreak_Ultimate_V2.4.mq5                    |
-//| Base: v2.3 + Max SL Capping Mechanism                           |
+//|                                       Model_D1_2_Advanced.mq5    |
+//|                                Copyright 2026, AI Collaborator   |
 //+------------------------------------------------------------------+
-#property copyright "Custom EA - Educational/Experimental Use"
-#property version   "3.10"
-// v3.1: base v2.5_Fixed. Tambah:
-// - UseStaticSL: SL fixed manual, bypass Open-candle+cap
-// - Weekend close: tutup semua posisi+pending Jumat jam X (server time)
-// - Session filter: Asian/London/US toggle terpisah
-// - Day filter: Senin-Jumat toggle terpisah (Sabtu/Minggu selalu off)
-#property strict
+#property copyright "Copyright 2026"
+#property link      ""
+#property version   "1.20"
+#property description "Model D1.2: Single Layer, Session/Day Filters, Static/Dynamic SL & Streak Size Limits"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
-//================== INPUT ==================
-input group "=== Cakupan Symbol & Timeframe ==="
-input string SymbolList          = "XAUUSD";
-input string TimeframeList       = "H1";
+//--- INPUT PARAMETERS ---
 
-input group "=== Strategi & Layering ==="
-input int    StreakCount         = 2;
-input double RetracePercent      = 0; // Retrace x% dari candle kedua (50% = 0.50)
-input int    MaxConsecutiveTrades= 4;    // Batas maksimal trade berurutan
+input group "=== 1. Parameter Strategi Retrace ==="
+input int      InpStreakCount      = 2;      // Jumlah Candle Streak Konsekutif
+input double   InpRetracePercent   = 30.0;   // Retrace Static (x%) dari Range Streak
+input int      InpLimitExpireBars  = 3;      // Masa Berlaku Pending Order (Bar)
 
-input group "=== Lot Management ==="
-input bool   UseStaticLot        = true;
-input double StaticLotSize       = 0.05; // Otomatis disesuaikan ke min/step lot broker
-input double RiskPercentPerTrade = 1.0;  // Digunakan jika UseStaticLot = false
+input group "=== 2. Filter Batasan Ukuran Candle 1 & 2 ==="
+input bool     InpUseStreakSizeFilter = true; // Aktifkan Filter Minimal/Maksimal Ukuran Streak
+input double   InpMinStreakPoints     = 300;  // Batasan Minimal Total Points (Candle 1 & 2)
+input double   InpMaxStreakPoints     = 3000; // Batasan Maksimal Total Points (Candle 1 & 2)
 
-input group "=== Target TP & SL ==="
-input double SL_BufferPoints     = 0;    // Buffer SL tambahan dalam point
-input double MaxSLPoints         = 1000; // BATAS MAKSIMAL SL (0 = Tanpa Batas / Mengikuti Open Candle)
-input double RiskRewardRatio     = 1.0;  // TP Layer 1 (1:1 RR)
+input group "=== 3. Pengaturan Stop Loss & Take Profit ==="
+input bool     InpUseStaticSL      = false;  // True = Static SL (Points), False = Dynamic SL (Streak Low/High)
+input double   InpStaticSLPoints   = 500;    // Jarak Static SL (Points) - Digunakan jika UseStaticSL = true
+input double   InpRiskRewardRatio  = 2.5;    // Risk Reward Ratio (TP = Jarak SL * RRR)
+input int      InpSLBufferPoints   = 0;      // Buffer Tambahan untuk Dynamic SL (Points)
 
-input group "=== Trailing Stop ==="
-input bool   UseTrailingStop     = false;
-input double TrailStepPercent    = 10.0;
+input group "=== 4. Filter Sesi Trading (Server Time) ==="
+input bool     InpUseAsianSession  = true;   // Aktifkan Sesi Asia
+input int      InpAsianStartHour   = 0;      // Asia Start Hour
+input int      InpAsianEndHour     = 8;      // Asia End Hour
 
-input group "=== SL Static (Override) ==="
-input bool   UseStaticSL         = true; // true = pakai StaticSLPoints, bypass logic Open-candle & cap
-input double StaticSLPoints      = 25000;  // jarak SL fixed dalam point, dipakai kalau UseStaticSL=true
+input bool     InpUseLondonSession = true;   // Aktifkan Sesi London
+input int      InpLondonStartHour  = 9;      // London Start Hour
+input int      InpLondonEndHour    = 16;     // London End Hour
 
-input group "=== Weekend Close ==="
-input bool   UseWeekendClose     = true;
-input int    WeekendCloseHour    = 22;    // jam Jumat (server time) mulai tutup semua posisi
-input bool   BlockNewTradeAfterWeekendClose = true; // cegah entry baru setelah jam ini di hari Jumat
+input bool     InpUseUSSession     = true;   // Aktifkan Sesi US / New York
+input int      InpUSStartHour      = 15;     // US Start Hour
+input int      InpUSEndHour        = 23;     // US End Hour
 
-input group "=== Session Filter (semua ON = tanpa filter jam) ==="
-input bool   UseSessionFilter    = false; // master switch, kalau false semua session dianggap terbuka
-input bool   EnableAsianSession  = true;
-input int    AsianStartHour      = 1;
-input int    AsianEndHour        = 9;
-input bool   EnableLondonSession = true;
-input int    LondonStartHour     = 9;
-input int    LondonEndHour       = 17;
-input bool   EnableUSSession     = true;
-input int    USStartHour         = 14;
-input int    USEndHour           = 22;
+input group "=== 5. Filter Hari Trading ==="
+input bool     InpTradeMonday      = true;   // Trading Hari Senin
+input bool     InpTradeTuesday     = true;   // Trading Hari Selasa
+input bool     InpTradeWednesday   = true;   // Trading Hari Rabu
+input bool     InpTradeThursday    = true;   // Trading Hari Kamis
+input bool     InpTradeFriday      = true;   // Trading Hari Jumat
 
-input group "=== Day Filter ==="
-input bool   TradeMonday         = true;
-input bool   TradeTuesday        = true;
-input bool   TradeWednesday      = true;
-input bool   TradeThursday       = true;
-input bool   TradeFriday         = true;
+input group "=== 6. Management & ID ==="
+input double   InpLotSize          = 0.03;   // Ukuran Lot (Single Layer)
+input ulong    InpMagicNumber      = 777012; // Magic Number EA
 
-input group "=== Filter Umum ==="
-input bool   UseSpreadFilter     = false;
-input double MaxSpreadPoints     = 500;
-input bool   OnePositionPerSymbol= false;
-input int    MaxTotalOpenPositions = 3;
-input int    MagicNumber         = 777007;
+//--- Global Variables
+int      g_totalSetups = 0;
+int      g_retraceHits = 0;
+datetime g_lastBarTime = 0;
 
-//================== STRUCT & GLOBAL ==================
-struct SymTFState
-  {
-   string          symbol;
-   ENUM_TIMEFRAMES tf;
-   datetime        lastBarTime;
-   int             consecutiveTrades;
-  };
-
-SymTFState g_states[];
-
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
-  {
-   string symbols[]; string tfs[];
-   int nSym = StringSplit(SymbolList, ',', symbols);
-   int nTf  = StringSplit(TimeframeList, ',', tfs);
-
-   if(nSym <= 0 || nTf <= 0)
-     {
-      Print("ERROR: SymbolList atau TimeframeList kosong/invalid.");
-      return(INIT_FAILED);
-     }
-
-   ArrayResize(g_states, nSym * nTf);
-   int idx = 0;
-
-   for(int s=0; s<nSym; s++)
-     {
-      string sym = symbols[s];
-      StringTrimLeft(sym); StringTrimRight(sym);
-      if(!SymbolSelect(sym, true))
-        {
-         Print("WARNING: Symbol '", sym, "' tidak ditemukan, dilewati.");
-         continue;
-        }
-
-      for(int t=0; t<nTf; t++)
-        {
-         string tfStr = tfs[t];
-         StringTrimLeft(tfStr); StringTrimRight(tfStr);
-         bool validTf;
-         ENUM_TIMEFRAMES tf = StringToTimeframe(tfStr, validTf);
-         if(!validTf)
-           {
-            Print("WARNING: Timeframe '", tfStr, "' tidak dikenali, dilewati (BUKAN fallback diam-diam).");
-            continue;
-           }
-
-         g_states[idx].symbol = sym;
-         g_states[idx].tf = tf;
-         g_states[idx].lastBarTime = 0;
-         g_states[idx].consecutiveTrades = 0;
-         idx++;
-        }
-     }
-
-   ArrayResize(g_states, idx);
-   trade.SetExpertMagicNumber(MagicNumber);
-   Print("EA v7.60 Max SL Cap Initialized. Max SL: ", MaxSLPoints, " points.");
+{
+   trade.SetExpertMagicNumber(InpMagicNumber);
+   g_lastBarTime = 0;
+   g_totalSetups = 0;
+   g_retraceHits = 0;
+   
+   EventSetTimer(1);
    return(INIT_SUCCEEDED);
-  }
+}
 
 //+------------------------------------------------------------------+
-ENUM_TIMEFRAMES StringToTimeframe(string s, bool &valid)
-  {
-   valid = true;
-   if(s=="M1")  return PERIOD_M1;
-   if(s=="M5")  return PERIOD_M5;
-   if(s=="M15") return PERIOD_M15;
-   if(s=="M30") return PERIOD_M30;
-   if(s=="H1")  return PERIOD_H1;
-   if(s=="H4")  return PERIOD_H4;
-   if(s=="D1")  return PERIOD_D1;
-   if(s=="W1")  return PERIOD_W1;
-   if(s=="MN1") return PERIOD_MN1;
-   valid = false;
-   return PERIOD_CURRENT;
-  }
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
+   Comment("");
+}
 
+//+------------------------------------------------------------------+
+//| Timer function for Dashboard UI                                  |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   UpdateDashboard();
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
 //+------------------------------------------------------------------+
 void OnTick()
-  {
-   if(UseTrailingStop) ManageTrailingStop();
-   if(UseWeekendClose) CheckWeekendClose();
-   if(PositionsTotal() >= MaxTotalOpenPositions) return;
-
-   for(int i=0; i<ArraySize(g_states); i++)
-     {
-      string sym = g_states[i].symbol;
-      ENUM_TIMEFRAMES tf = g_states[i].tf;
-
-      datetime currentBarTime = iTime(sym, tf, 0);
-      if(currentBarTime <= 0 || currentBarTime == g_states[i].lastBarTime) continue;
-
-      g_states[i].lastBarTime = currentBarTime;
-
-      DeleteStalePendingOrders(sym);
-
-      if(UseSpreadFilter && IsSpreadHigh(sym)) continue;
-      if(OnePositionPerSymbol && PositionSelect(sym)) continue;
-      if(!IsDayAllowed()) continue;
-      if(UseSessionFilter && !IsSessionAllowed()) continue;
-      if(UseWeekendClose && BlockNewTradeAfterWeekendClose && IsPastWeekendCloseHour()) continue;
-
-      int signal = EvaluateStreak(sym, tf);
-      
-      if(signal == 0)
-        {
-         g_states[i].consecutiveTrades = 0;
-         continue;
-        }
-
-      if(g_states[i].consecutiveTrades >= MaxConsecutiveTrades)
-        {
-         Print(sym, " - Batas maks ", MaxConsecutiveTrades, " trade sekuensial tercapai. Skip.");
-         continue;
-        }
-
-      bool executed = false;
-      if(signal == 1)  executed = ExecuteLayeredTrade(sym, tf, ORDER_TYPE_BUY, currentBarTime);
-      if(signal == -1) executed = ExecuteLayeredTrade(sym, tf, ORDER_TYPE_SELL, currentBarTime);
-
-      if(executed)
-        {
-         g_states[i].consecutiveTrades++;
-         Print(sym, " Trade Berhasil. Consecutive Count: ", g_states[i].consecutiveTrades);
-        }
-     }
-  }
-
-//+------------------------------------------------------------------+
-int EvaluateStreak(string sym, ENUM_TIMEFRAMES tf)
-  {
-   if(iBars(sym, tf) < StreakCount + 1) return 0;
-
-   bool allGreen = true, allRed = true;
-   for(int i=1; i<=StreakCount; i++)
-     {
-      double o = iOpen(sym, tf, i);
-      double c = iClose(sym, tf, i);
-      if(o <= 0 || c <= 0) return 0;
-      
-      if(c <= o) allGreen = false;
-      if(c >= o) allRed = false;
-     }
-   if(allGreen) return 1;
-   if(allRed)   return -1;
-   return 0;
-  }
-
-//+------------------------------------------------------------------+
-double NormalizeLot(string sym, double targetLot)
-  {
-   double minLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
-   double maxLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
-   double stepLot = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
-
-   if(stepLot > 0)
-      targetLot = MathFloor(targetLot / stepLot) * stepLot;
-
-   if(targetLot < minLot) targetLot = minLot;
-   if(targetLot > maxLot) targetLot = maxLot;
-
-   return NormalizeDouble(targetLot, 2);
-  }
-
-//+------------------------------------------------------------------+
-double CalculateDynamicLot(string sym, double slPoints)
-  {
-   double riskAmount = AccountInfoDouble(ACCOUNT_BALANCE) * (RiskPercentPerTrade/100.0);
-   double tickValue  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize   = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
-   double point      = SymbolInfoDouble(sym, SYMBOL_POINT);
+{
+   // 1. Cek Bar Baru
+   datetime currentBarTime = iTime(_Symbol, _Period, 0);
+   if(currentBarTime == g_lastBarTime) return;
    
-   if(tickValue<=0 || tickSize<=0 || point<=0 || slPoints<=0) 
-      return NormalizeLot(sym, StaticLotSize);
+   // 2. Rule Single Layer
+   if(HasActivePositionOrPending()) return;
 
-   double valuePerPoint = tickValue * (point/tickSize);
-   double rawLot        = riskAmount / (slPoints * valuePerPoint);
+   // 3. Filter Hari & Filter Sesi
+   if(!IsDayAllowed() || !IsSessionAllowed()) return;
 
-   return NormalizeLot(sym, rawLot);
-  }
+   // 4. Cek Sinyal Streak
+   int streakDirection = CheckStreakSignal();
+   if(streakDirection == 0) return;
 
-//+------------------------------------------------------------------+
-bool IsSpreadHigh(string sym)
-  {
-   double spreadPoints = (double)SymbolInfoInteger(sym, SYMBOL_SPREAD);
-   return (spreadPoints > MaxSpreadPoints);
-  }
+   // 5. Cek Batasan Minimal & Maksimal Total Harga/Point Candle 1 & 2
+   double streakOpenToCloseDistance = MathAbs(iClose(_Symbol, _Period, 1) - iOpen(_Symbol, _Period, InpStreakCount)) / _Point;
+   
+   if(InpUseStreakSizeFilter)
+   {
+      if(streakOpenToCloseDistance < InpMinStreakPoints || streakOpenToCloseDistance > InpMaxStreakPoints)
+      {
+         PrintFormat("Model D1.2: Sinyal Abaikan! Total Jarak Streak (%.1f pt) di luar batas [%.0f - %.0f pt]",
+                     streakOpenToCloseDistance, InpMinStreakPoints, InpMaxStreakPoints);
+         return;
+      }
+   }
 
-//+------------------------------------------------------------------+
-bool IsDayAllowed()
-  {
-   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-   switch(dt.day_of_week)
-     {
-      case 1: return TradeMonday;
-      case 2: return TradeTuesday;
-      case 3: return TradeWednesday;
-      case 4: return TradeThursday;
-      case 5: return TradeFriday;
-      default: return false; // Sabtu/Minggu selalu off (market XAUUSD tutup weekend)
-     }
-  }
+   // Berhasil Lolos Semua Filter!
+   g_lastBarTime = currentBarTime;
+   g_totalSetups++;
 
-//+------------------------------------------------------------------+
-bool InHourRange(int h, int startH, int endH)
-  {
-   if(startH <= endH) return (h >= startH && h < endH);
-   return (h >= startH || h < endH); // wrap tengah malam
-  }
+   // Hitung High & Low dari keseluruhan Streak
+   double streakHigh  = GetStreakHigh(InpStreakCount);
+   double streakLow   = GetStreakLow(InpStreakCount);
+   double streakRange = streakHigh - streakLow;
 
-bool IsSessionAllowed()
-  {
-   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-   int h = dt.hour;
-   bool allowed = false;
-   if(EnableAsianSession  && InHourRange(h, AsianStartHour, AsianEndHour))   allowed = true;
-   if(EnableLondonSession && InHourRange(h, LondonStartHour, LondonEndHour)) allowed = true;
-   if(EnableUSSession     && InHourRange(h, USStartHour, USEndHour))        allowed = true;
-   return allowed;
-  }
+   if(streakRange <= 0) return;
 
-//+------------------------------------------------------------------+
-bool IsPastWeekendCloseHour()
-  {
-   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-   return (dt.day_of_week == 5 && dt.hour >= WeekendCloseHour); // Jumat >= jam X
-  }
+   double limitPrice = 0;
+   double slPrice    = 0;
+   double tpPrice    = 0;
+   ENUM_ORDER_TYPE orderType;
 
-void CheckWeekendClose()
-  {
-   if(!IsPastWeekendCloseHour()) return;
-
-   for(int i=PositionsTotal()-1; i>=0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-      trade.PositionClose(ticket);
-     }
-   // pending order lompatan juga dihapus, tak ada gunanya nunggu weekend
-   for(int i=OrdersTotal()-1; i>=0; i--)
-     {
-      ulong ticket = OrderGetTicket(i);
-      if(!OrderSelect(ticket)) continue;
-      if(OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
-      trade.OrderDelete(ticket);
-     }
-  }
-
-//+------------------------------------------------------------------+
-void DeleteStalePendingOrders(string sym)
-  {
-   for(int i=OrdersTotal()-1; i>=0; i--)
-     {
-      ulong ticket = OrderGetTicket(i);
-      if(!OrderSelect(ticket)) continue;
-      if(OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
-      if(OrderGetString(ORDER_SYMBOL) != sym) continue;
-
-      ENUM_ORDER_TYPE otype = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
-      if(otype == ORDER_TYPE_BUY_LIMIT || otype == ORDER_TYPE_SELL_LIMIT)
-         trade.OrderDelete(ticket);
-     }
-  }
-
-//+------------------------------------------------------------------+
-void SetAutoFillingType(string sym)
-  {
-   uint filling = (uint)SymbolInfoInteger(sym, SYMBOL_FILLING_MODE);
-   if((filling & SYMBOL_FILLING_FOK) != 0)
-      trade.SetTypeFilling(ORDER_FILLING_FOK);
-   else if((filling & SYMBOL_FILLING_IOC) != 0)
-      trade.SetTypeFilling(ORDER_FILLING_IOC);
-   else
-      trade.SetTypeFilling(ORDER_FILLING_RETURN);
-  }
-
-//+------------------------------------------------------------------+
-//| Eksekusi Trade dengan Logika Capping Max SL                      |
-//+------------------------------------------------------------------+
-bool ExecuteLayeredTrade(string sym, ENUM_TIMEFRAMES tf, ENUM_ORDER_TYPE type, datetime barTime)
-  {
-   SetAutoFillingType(sym);
-
-   double point     = SymbolInfoDouble(sym, SYMBOL_POINT);
-   double ask       = SymbolInfoDouble(sym, SYMBOL_ASK);
-   double bid       = SymbolInfoDouble(sym, SYMBOL_BID);
-   double stopLevel = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL) * point;
-
-   if(point <= 0 || ask <= 0 || bid <= 0) return false;
-
-   int firstCandleIdx = StreakCount; 
-
-   double h1 = iHigh(sym, tf, 1);
-   double l1 = iLow(sym, tf, 1);
-   double range1 = h1 - l1;
-   if(range1 <= 0) return false;
-
-   // SL ideal awal dari Open candle lompatan pertama
-   double slLevel = iOpen(sym, tf, firstCandleIdx);
-   bool anyExecuted = false;
-
-   // --- 1. EKSEKUSI LAYER 1 (Market Order Instant) ---
-   double entryL1 = (type == ORDER_TYPE_BUY) ? ask : bid;
-   double slL1;
-
-   if(UseStaticSL)
-     {
-      // Bypass total logic Open-candle & MaxSLPoints cap. Murni fixed point dari entry.
-      slL1 = (type == ORDER_TYPE_BUY) ? (entryL1 - StaticSLPoints*point) : (entryL1 + StaticSLPoints*point);
-     }
-   else
-     {
-      double rawSL = (type == ORDER_TYPE_BUY) ? (slLevel - SL_BufferPoints*point) 
-                                                : (slLevel + SL_BufferPoints*point);
-      slL1 = rawSL;
-
-      // PERHITUNGAN BATAS MAKSIMAL SL (MaxSLPoints)
-      if(type == ORDER_TYPE_BUY)
-        {
-         double rawDistPoints = (entryL1 - rawSL) / point;
-         if(MaxSLPoints > 0 && rawDistPoints > MaxSLPoints)
-           {
-            slL1 = entryL1 - (MaxSLPoints * point);
-            Print(sym, " - SL terlalu jauh (", rawDistPoints, " pt). Dicap ke MaxSLPoints: ", MaxSLPoints);
-           }
-        }
-      else // SELL
-        {
-         double rawDistPoints = (rawSL - entryL1) / point;
-         if(MaxSLPoints > 0 && rawDistPoints > MaxSLPoints)
-           {
-            slL1 = entryL1 + (MaxSLPoints * point);
-            Print(sym, " - SL terlalu jauh (", rawDistPoints, " pt). Dicap ke MaxSLPoints: ", MaxSLPoints);
-           }
-        }
-     }
-
-   double R1 = (type == ORDER_TYPE_BUY) ? (entryL1 - slL1) : (slL1 - entryL1);
-
-   if(R1 > 0)
-     {
-      double tpL1  = (type == ORDER_TYPE_BUY) ? (entryL1 + R1 * RiskRewardRatio) 
-                                              : (entryL1 - R1 * RiskRewardRatio);
-      double lotL1 = UseStaticLot ? NormalizeLot(sym, StaticLotSize) : CalculateDynamicLot(sym, R1/point);
-
-      bool resL1 = (type == ORDER_TYPE_BUY) ? 
-                   trade.Buy(lotL1, sym, entryL1, slL1, tpL1, "S7_L1|"+DoubleToString(R1,_Digits)) : 
-                   trade.Sell(lotL1, sym, entryL1, slL1, tpL1, "S7_L1|"+DoubleToString(R1,_Digits));
-
-      if(resL1) anyExecuted = true;
-      else Print("Error Layer 1 [", sym, "]: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
-     }
-
-   // --- 2. EKSEKUSI LAYER 2 (Pending Limit Order Menggunakan SL yang Sudah Dicap) ---
-   double limitPriceL2, tpL2, slL2, R2;
-
-   if(type == ORDER_TYPE_BUY)
-     {
-      limitPriceL2 = h1 - RetracePercent * range1;
-      slL2         = slL1; // Menggunakan SL yang sudah dicap dari Layer 1
-      tpL2         = h1;
-      R2           = limitPriceL2 - slL2;
-
-      if(R2 > 0 && limitPriceL2 <= (ask - stopLevel)) 
-        {
-         double lotL2  = UseStaticLot ? NormalizeLot(sym, StaticLotSize) : CalculateDynamicLot(sym, R2/point);
-         datetime expr = barTime + PeriodSeconds(tf);
-         
-         if(trade.BuyLimit(lotL2, limitPriceL2, sym, slL2, tpL2, ORDER_TIME_SPECIFIED, expr, "S7_L2|"+DoubleToString(R2,_Digits)))
-            anyExecuted = true;
-        }
-     }
-   else // SELL
-     {
-      limitPriceL2 = l1 + RetracePercent * range1;
-      slL2         = slL1; // Menggunakan SL yang sudah dicap dari Layer 1
-      tpL2         = l1;
-      R2           = slL2 - limitPriceL2;
-
-      if(R2 > 0 && limitPriceL2 >= (bid + stopLevel)) 
-        {
-         double lotL2  = UseStaticLot ? NormalizeLot(sym, StaticLotSize) : CalculateDynamicLot(sym, R2/point);
-         datetime expr = barTime + PeriodSeconds(tf);
-         
-         if(trade.SellLimit(lotL2, limitPriceL2, sym, slL2, tpL2, ORDER_TIME_SPECIFIED, expr, "S7_L2|"+DoubleToString(R2,_Digits)))
-            anyExecuted = true;
-        }
-     }
-
-   return anyExecuted;
-  }
-
-//+------------------------------------------------------------------+
-void ManageTrailingStop()
-  {
-   double stepFraction = TrailStepPercent / 100.0;
-
-   for(int i=PositionsTotal()-1; i>=0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-
-      string sym = PositionGetString(POSITION_SYMBOL);
-      string cmt = PositionGetString(POSITION_COMMENT);
-
-      int sep = StringFind(cmt, "|");
-      if(sep < 0) continue;
-      double R = StringToDouble(StringSubstr(cmt, sep+1));
-      if(R <= 0) continue;
-
-      double entry     = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentSL = PositionGetDouble(POSITION_SL);
-      double currentTP = PositionGetDouble(POSITION_TP);
-      long type        = PositionGetInteger(POSITION_TYPE);
-
-      double bid = SymbolInfoDouble(sym, SYMBOL_BID);
-      double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
-
-      double profitR     = (type == POSITION_TYPE_BUY) ? ((bid - entry) / R) : ((entry - ask) / R);
-      double stepsPassed = MathFloor(profitR / stepFraction);
-      if(stepsPassed < 1) continue;
-
-      double lockedR = -1.0 + stepsPassed * stepFraction;
-
-      if(type == POSITION_TYPE_BUY)
-        {
-         double newSL = entry + lockedR * R;
-         if(newSL > currentSL) trade.PositionModify(ticket, newSL, currentTP);
-        }
+   if(streakDirection == 1) // BULLISH STREAK
+   {
+      orderType  = ORDER_TYPE_BUY_LIMIT;
+      limitPrice = streakHigh - (streakRange * (InpRetracePercent / 100.0));
+      
+      // Penentuan SL (Static vs Dynamic)
+      if(InpUseStaticSL)
+         slPrice = limitPrice - (InpStaticSLPoints * _Point);
       else
-        {
-         double newSL = entry - lockedR * R;
-         if(currentSL == 0 || newSL < currentSL) trade.PositionModify(ticket, newSL, currentTP);
-        }
-     }
-  }
+         slPrice = streakLow - (InpSLBufferPoints * _Point);
+      
+      double riskDistance = limitPrice - slPrice;
+      if(riskDistance <= 0) return;
+      
+      tpPrice = limitPrice + (riskDistance * InpRiskRewardRatio);
+   }
+   else // BEARISH STREAK
+   {
+      orderType  = ORDER_TYPE_SELL_LIMIT;
+      limitPrice = streakLow + (streakRange * (InpRetracePercent / 100.0));
+      
+      // Penentuan SL (Static vs Dynamic)
+      if(InpUseStaticSL)
+         slPrice = limitPrice + (InpStaticSLPoints * _Point);
+      else
+         slPrice = streakHigh + (InpSLBufferPoints * _Point);
+      
+      double riskDistance = slPrice - limitPrice;
+      if(riskDistance <= 0) return;
+      
+      tpPrice = limitPrice - (riskDistance * InpRiskRewardRatio);
+   }
+
+   // Presisi Harga
+   limitPrice = NormalizeDouble(limitPrice, _Digits);
+   slPrice    = NormalizeDouble(slPrice, _Digits);
+   tpPrice    = NormalizeDouble(tpPrice, _Digits);
+
+   // Expiration Pending Order
+   datetime expirationTime = currentBarTime + (InpLimitExpireBars * PeriodSeconds(_Period));
+   
+   // Kirim Pending Order
+   if(trade.OrderOpen(_Symbol, orderType, InpLotSize, limitPrice, limitPrice, slPrice, tpPrice, ORDER_TIME_SPECIFIED, expirationTime, "Model D1.2"))
+   {
+      PrintFormat("Model D1.2: Order %s terpasang di %.5f | SL: %.5f | TP: %.5f", 
+                  EnumToString(orderType), limitPrice, slPrice, tpPrice);
+   }
+}
+
 //+------------------------------------------------------------------+
+//| Callback Hit Tracking                                            |
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest& request, const MqlTradeResult& result)
+{
+   if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
+   {
+      if(HistoryDealGetInteger(trans.deal, DEAL_MAGIC) == InpMagicNumber)
+      {
+         ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+         if(entry == DEAL_ENTRY_IN)
+         {
+            g_retraceHits++;
+            UpdateDashboard();
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Custom Optimization Metric (Hit Rate %)                          |
+//+------------------------------------------------------------------+
+double OnTester()
+{
+   if(g_totalSetups == 0) return 0.0;
+   return ((double)g_retraceHits / (double)g_totalSetups) * 100.0;
+}
+
+//+------------------------------------------------------------------+
+//| HELPER FUNCTIONS                                                 |
+//+------------------------------------------------------------------+
+
+// Filter Hari
+bool IsDayAllowed()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   
+   switch(dt.day_of_week)
+   {
+      case 1: return InpTradeMonday;
+      case 2: return InpTradeTuesday;
+      case 3: return InpTradeWednesday;
+      case 4: return InpTradeThursday;
+      case 5: return InpTradeFriday;
+      default: return false; // Sabtu / Minggu
+   }
+}
+
+// Filter Sesi
+bool IsSessionAllowed()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   int currentHour = dt.hour;
+
+   bool inAsian  = InpUseAsianSession  && IsTimeInHourRange(currentHour, InpAsianStartHour, InpAsianEndHour);
+   bool inLondon = InpUseLondonSession && IsTimeInHourRange(currentHour, InpLondonStartHour, InpLondonEndHour);
+   bool inUS     = InpUseUSSession     && IsTimeInHourRange(currentHour, InpUSStartHour, InpUSEndHour);
+
+   return (inAsian || inLondon || inUS);
+}
+
+// Range Jam Sesi
+bool IsTimeInHourRange(int hour, int startHour, int endHour)
+{
+   if(startHour < endHour)
+      return (hour >= startHour && hour < endHour);
+   else // Sesi Lintas Tengah Malam (misal 22:00 s/d 05:00)
+      return (hour >= startHour || hour < endHour);
+}
+
+// Cek Sinyal Streak
+int CheckStreakSignal()
+{
+   bool bullish = true;
+   bool bearish = true;
+
+   for(int i = 1; i <= InpStreakCount; i++)
+   {
+      double closePrice = iClose(_Symbol, _Period, i);
+      double openPrice  = iOpen(_Symbol, _Period, i);
+
+      if(closePrice <= openPrice) bullish = false;
+      if(closePrice >= openPrice) bearish = false;
+   }
+
+   if(bullish) return 1;
+   if(bearish) return -1;
+   return 0;
+}
+
+// Cek Posisi / Order Aktif
+bool HasActivePositionOrPending()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+         return true;
+   }
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(OrderGetTicket(i) > 0)
+      {
+         if(OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
+            return true;
+      }
+   }
+
+   return false;
+}
+
+double GetStreakHigh(int count)
+{
+   double maxHigh = iHigh(_Symbol, _Period, 1);
+   for(int i = 2; i <= count; i++)
+   {
+      double h = iHigh(_Symbol, _Period, i);
+      if(h > maxHigh) maxHigh = h;
+   }
+   return maxHigh;
+}
+
+double GetStreakLow(int count)
+{
+   double minLow = iLow(_Symbol, _Period, 1);
+   for(int i = 2; i <= count; i++)
+   {
+      double l = iLow(_Symbol, _Period, i);
+      if(l < minLow) minLow = l;
+   }
+   return minLow;
+}
+
+void UpdateDashboard()
+{
+   double hitRate = (g_totalSetups > 0) ? ((double)g_retraceHits / (double)g_totalSetups) * 100.0 : 0.0;
+   
+   string text = "=========================================\n";
+   text += "     MODEL D1.2 - ADVANCED PANEL        \n";
+   text += "=========================================\n";
+   text += StringFormat("Target Retrace (x%%)   : %.1f%%\n", InpRetracePercent);
+   text += StringFormat("Mode Stop Loss         : %s\n", InpUseStaticSL ? "STATIC" : "DYNAMIC");
+   text += StringFormat("Total Streak Setup     : %d\n", g_totalSetups);
+   text += StringFormat("Retrace Hits           : %d\n", g_retraceHits);
+   text += StringFormat("Retrace Hit Rate       : %.2f%%\n", hitRate);
+   text += "=========================================\n";
+
+   Comment(text);
+}

@@ -15,6 +15,9 @@
 //| - StreakCalcMode Layer1 dipakai HANYA buat hitung SL dinamis.    |
 //| - Magic number SATU dipakai bareng ketiga layer (sesuai System   |
 //|   Filter group); layer dibedakan lewat prefix comment "L1/L2/L3".|
+
+// Ini Masih ERROR perlu di Debug (hasil Claude Brave)
+
 //+------------------------------------------------------------------+
 #property copyright "Custom EA - Educational/Experimental Use"
 #property version   "1.00"

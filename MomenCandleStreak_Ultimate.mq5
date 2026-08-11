@@ -1,6 +1,11 @@
 //+------------------------------------------------------------------+
 //| MomenCandleStreak_V5_Independent.mq5                             |
 //| Rombak total: 3 layer independen, tiap layer full-config sendiri |
+
+// Beda ROOT dengan V5.1 tetapi sistemasi dan metodenya sama (Hasil Claude Chrome)
+// Tambahan Fitur yaitu bisa Auto-close Position setelah beberapa waktu (Dalam Bar)
+// Salah satu Bedanya dengan V5.1 adalah V5.2 harus declare Pair dan Timeframe sendiri sedangkan V5.1 sudah otomatis adapt 
+
 //+------------------------------------------------------------------+
 #property copyright "Custom EA - V5 Independent Layer Architecture"
 #property version   "5.00"

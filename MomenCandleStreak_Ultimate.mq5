@@ -5,6 +5,9 @@
 //| trailing, consecutive-limit, expire bar -- SEMUA sendiri2.       |
 //| Session/Day filter & System filter (spread, max pos, SL buffer,  |
 //| magic) di-share satu group buat semua layer.                     |
+
+// HASIL DEBUG GEMINI DARI V5.1 (HASIL GEMINI)
+
 //+------------------------------------------------------------------+
 #property copyright "Custom EA - Educational/Experimental Use"
 #property version   "1.00"

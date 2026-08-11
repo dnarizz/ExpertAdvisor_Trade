@@ -1,20 +1,10 @@
 //+------------------------------------------------------------------+
-//| TripleLayer_Independent_EA_v1.0.mq5                              |
+//| TripleLayer_Independent_EA_v1.0.mq5                               |
 //| 1 sistem, 3 layer (Market/Retrace/Retrace) TOTAL INDEPENDEN.     |
 //| Tiap layer: streak count, calc mode, retrace%, lot, SL, RRR,     |
 //| trailing, consecutive-limit, expire bar -- SEMUA sendiri2.       |
 //| Session/Day filter & System filter (spread, max pos, SL buffer,  |
 //| magic) di-share satu group buat semua layer.                     |
-//|                                                                    |
-//| ASUMSI (nyatakan eksplisit, koreksi kalau salah):                |
-//| - Single symbol/timeframe (chart aktif via _Symbol/_Period),     |
-//|   BUKAN multi symbol/TF kayak versi lama.                        |
-//| - Weekend-close fitur versi lama DIHAPUS (tak disebut di spek).  |
-//| - Layer1 (market) TIDAK punya RetracePercent & LimitExpireBar    |
-//|   (gak relevan, market entry langsung, gak ada pending expiry).  |
-//| - StreakCalcMode Layer1 dipakai HANYA buat hitung SL dinamis.    |
-//| - Magic number SATU dipakai bareng ketiga layer (sesuai System   |
-//|   Filter group); layer dibedakan lewat prefix comment "L1/L2/L3".|
 //+------------------------------------------------------------------+
 #property copyright "Custom EA - Educational/Experimental Use"
 #property version   "1.00"
@@ -148,7 +138,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   ManageTrailingStop(); // jalan tiap tick, gate per-layer di dalam fungsi (cek UseTrailingStop masing2)
+   ManageTrailingStop();
 
    if(PositionsTotal() >= MaxTotalOpenPositions) return;
 
@@ -173,9 +163,6 @@ void OnTick()
   }
 
 //+------------------------------------------------------------------+
-//| Hitung sinyal streak (independen per layer, pakai StreakCount    |
-//| layer itu sendiri). return 1=bullish, -1=bearish, 0=none         |
-//+------------------------------------------------------------------+
 int EvaluateStreak(int streakCount)
   {
    if(iBars(_Symbol, _Period) < streakCount + 1) return 0;
@@ -194,9 +181,6 @@ int EvaluateStreak(int streakCount)
   }
 
 //+------------------------------------------------------------------+
-//| Ambil top/bottom acuan sesuai StreakCalcMode.                    |
-//| direction: 1=bullish streak, -1=bearish streak                   |
-//+------------------------------------------------------------------+
 void GetStreakBounds(int streakCount, ENUM_STREAK_CALC_MODE mode, int direction, double &top, double &bottom)
   {
    if(mode == STREAK_CALC_HIGH_LOW)
@@ -213,8 +197,8 @@ void GetStreakBounds(int streakCount, ENUM_STREAK_CALC_MODE mode, int direction,
      }
    else // STREAK_CALC_OPEN_CLOSE
      {
-      double openFirst = iOpen(_Symbol, _Period, streakCount); // candle tertua streak
-      double closeLast  = iClose(_Symbol, _Period, 1);          // candle terbaru streak
+      double openFirst = iOpen(_Symbol, _Period, streakCount);
+      double closeLast  = iClose(_Symbol, _Period, 1);
       if(direction == 1) { top = closeLast; bottom = openFirst; }
       else               { top = openFirst; bottom = closeLast; }
      }
@@ -299,8 +283,6 @@ void DeleteStalePendingOrders()
   }
 
 //+------------------------------------------------------------------+
-//| Hitung SL (static atau dinamis dari StreakCalcMode layer itu)   |
-//+------------------------------------------------------------------+
 double ComputeSL(int direction, double entryPrice, bool useStaticSL, double staticSLPoints,
                   int streakCount, ENUM_STREAK_CALC_MODE calcMode, double point)
   {
@@ -313,12 +295,10 @@ double ComputeSL(int direction, double entryPrice, bool useStaticSL, double stat
   }
 
 //+------------------------------------------------------------------+
-//| Streak size filter -- hanya berlaku kalau UseStaticSL=false     |
-//+------------------------------------------------------------------+
 bool PassStreakSizeFilter(bool useStaticSL, bool useFilter, double minPts, double maxPts,
                            int streakCount, ENUM_STREAK_CALC_MODE calcMode, int direction, double point)
   {
-   if(useStaticSL || !useFilter) return true; // filter cuma relevan saat SL dinamis
+   if(useStaticSL || !useFilter) return true;
    double top, bottom;
    GetStreakBounds(streakCount, calcMode, direction, top, bottom);
    double sizePoints = (top - bottom) / point;
@@ -378,7 +358,6 @@ void ProcessRetraceLayer(datetime barTime, int layerNum)
    int    maxConsec; bool useStaticLot; double staticLot, riskPct;
    bool   useStaticSL; double staticSLPts; bool useSizeFilter; double minPts, maxPts;
    double rrr; int expireBar;
-   int    counterRef; // 0=n/a, dipakai sbg penanda saja (counter diakses langsung di bawah)
 
    if(layerNum == 2)
      {
@@ -396,10 +375,16 @@ void ProcessRetraceLayer(datetime barTime, int layerNum)
      }
 
    int signal = EvaluateStreak(streakCount);
-   int &counter = (layerNum == 2) ? g_L2Counter : g_L3Counter;
 
-   if(signal == 0) { counter = 0; return; }
-   if(counter >= maxConsec)
+   if(signal == 0)
+     {
+      if(layerNum == 2) g_L2Counter = 0;
+      else              g_L3Counter = 0;
+      return;
+     }
+
+   int currentCounter = (layerNum == 2) ? g_L2Counter : g_L3Counter;
+   if(currentCounter >= maxConsec)
      {
       Print("[L", layerNum, "] Batas maks ", maxConsec, " trade sekuensial tercapai. Skip.");
       return;
@@ -452,7 +437,11 @@ void ProcessRetraceLayer(datetime barTime, int layerNum)
               trade.BuyLimit(lot, limitPrice, _Symbol, sl, tp, ORDER_TIME_SPECIFIED, expiration, tag) :
               trade.SellLimit(lot, limitPrice, _Symbol, sl, tp, ORDER_TIME_SPECIFIED, expiration, tag);
 
-   if(res) { counter++; Print("[L", layerNum, "] Pending terpasang. Counter=", counter); }
+   if(res)
+     {
+      if(layerNum == 2) { g_L2Counter++; Print("[L2] Pending terpasang. Counter=", g_L2Counter); }
+      else              { g_L3Counter++; Print("[L3] Pending terpasang. Counter=", g_L3Counter); }
+     }
    else Print("[L", layerNum, "] Error: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
   }
 
@@ -486,7 +475,7 @@ void ManageTrailingStop()
       double entry     = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentSL = PositionGetDouble(POSITION_SL);
       double currentTP = PositionGetDouble(POSITION_TP);
-      long   type       = PositionGetInteger(POSITION_TYPE);
+      long   type      = PositionGetInteger(POSITION_TYPE);
 
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);

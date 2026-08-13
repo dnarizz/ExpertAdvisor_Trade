@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| MomenCandleStreak_Ultimate_V5.3.mq5                |
+//| MomenCandleStreak_V5_3_AutoScope_CustomFitness.mq5                |
 //| Base: V5 Independent Layer. Scope symbol/TF: auto (_Symbol/      |
 //| _Period), diambil dari kode TripleLayer -- BUKAN multi-symbol.   |
 //| Tambahan: custom OnTester() fitness utk Fast Generic Algorithm   |
@@ -31,7 +31,7 @@ input double L1_StaticLotSize        = 0.03;
 input double L1_RiskPercentPerTrade  = 1.0;
 input bool   L1_UseStaticSLPoint     = false;
 input double L1_StaticSLPoints       = 2500;
-input bool   L1_UseStreakSizeFilter  = false; // UseStreakSizeFilter hanya efektif jika L1_UseStaticSLPoint = false
+input bool   L1_UseStreakSizeFilter  = false; 
 input double L1_MinStreakPoints      = 200;
 input double L1_MaxStreakPoints      = 3000;
 input double L1_RRR                  = 1.0;
@@ -45,7 +45,7 @@ input group "=== 2. Layer 2 - Pending Limit Retrace ==="
 input bool   L2_UseLayer             = true;
 input int    L2_StreakCount          = 2;
 input ENUM_STREAK_CALC_MODE L2_StreakCalcMode = STREAK_CALC_HIGH_LOW; //StreakCalcMode
-input double L2_RetracePercent       = 40.0; // skala 0-100
+input double L2_RetracePercent       = 40.0; // RetracePercent (skala 0-100)
 input int    L2_MaxConsecutiveTrades = 4;
 input bool   L2_UseStaticLot         = true;
 input double L2_StaticLotSize        = 0.03;
@@ -67,7 +67,7 @@ input group "=== 3. Layer 3 - Pending Limit Retrace ==="
 input bool   L3_UseLayer             = true;
 input int    L3_StreakCount          = 2;
 input ENUM_STREAK_CALC_MODE L3_StreakCalcMode = STREAK_CALC_HIGH_LOW; //StreakCalcMode
-input double L3_RetracePercent       = 70.0; // skala 0-100
+input double L3_RetracePercent       = 70.0; // RetracePercent (skala 0-100)
 input int    L3_MaxConsecutiveTrades = 4;
 input bool   L3_UseStaticLot         = true;
 input double L3_StaticLotSize        = 0.03;
@@ -120,12 +120,18 @@ input int    MagicNumber          = 777007;
 
 //================== INPUT: GROUP 7 - CUSTOM FITNESS (OnTester) ==================
 input group "=== 7. Custom Fitness - Fast Generic Algorithm (Custom Max) ==="
-input double Fitness_W_RecoveryFactor = 0.4;   // bobot Recovery Factor (net profit vs DD)
-input double Fitness_W_EquityR2       = 0.4;   // bobot kelurusan kurva equity (growth stabil)
-input double Fitness_W_WinRate        = 0.2;   // bobot win rate
-input int    Fitness_MinTrades        = 100;   // dibawah ini fitness dipangkas proporsional
-input double Fitness_MaxDD_Percent    = 30.0;  // hard cutoff: DD diatas ini fitness = 0
-input double Fitness_RF_NormCap       = 5.0;   // RF dinormalisasi thd angka ini (di-cap 1.0)
+// bobot Recovery Factor (net profit vs DD)
+input double Fitness_W_RecoveryFactor = 0.4;   //RecoveryFactor
+// bobot kelurusan kurva equity (growth stabil)
+input double Fitness_W_EquityR2       = 0.4;   //EquityR2
+// bobot win rate
+input double Fitness_W_WinRate        = 0.2;   //WWinrate
+// dibawah ini fitness dipangkas proporsional
+input int    Fitness_MinTrades        = 100;   //MinTrade
+// hard cutoff: DD diatas ini fitness = 0
+input double Fitness_MaxDD_Percent    = 30.0;  //DrawDown
+// RF dinormalisasi thd angka ini (di-cap 1.0)
+input double Fitness_RF_NormCap       = 5.0;   //NormCap
 
 //================== STRUCT ==================
 struct SLayerParams

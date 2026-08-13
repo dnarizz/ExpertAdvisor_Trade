@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| MomenCandleStreak_V5_3_AutoScope_CustomFitness.mq5                |
+//| MomenCandleStreak_Ultimate_V5.3.mq5                |
 //| Base: V5 Independent Layer. Scope symbol/TF: auto (_Symbol/      |
 //| _Period), diambil dari kode TripleLayer -- BUKAN multi-symbol.   |
 //| Tambahan: custom OnTester() fitness utk Fast Generic Algorithm   |
@@ -24,14 +24,14 @@ enum ENUM_STREAK_CALC_MODE
 input group "=== 1. Layer 1 - Market Instant ==="
 input bool   L1_UseLayer             = true;
 input int    L1_StreakCount          = 2;
-input ENUM_STREAK_CALC_MODE L1_StreakCalcMode = STREAK_CALC_OPEN_CLOSE; // dipakai HANYA utk SL dinamis
+input ENUM_STREAK_CALC_MODE L1_StreakCalcMode = STREAK_CALC_OPEN_CLOSE; // StreakCalcMode dipakai HANYA utk SL dinamis
 input int    L1_MaxConsecutiveTrades = 4;
 input bool   L1_UseStaticLot         = true;
 input double L1_StaticLotSize        = 0.03;
 input double L1_RiskPercentPerTrade  = 1.0;
 input bool   L1_UseStaticSLPoint     = false;
 input double L1_StaticSLPoints       = 2500;
-input bool   L1_UseStreakSizeFilter  = false; // hanya efektif jika L1_UseStaticSLPoint = false
+input bool   L1_UseStreakSizeFilter  = false; // UseStreakSizeFilter hanya efektif jika L1_UseStaticSLPoint = false
 input double L1_MinStreakPoints      = 200;
 input double L1_MaxStreakPoints      = 3000;
 input double L1_RRR                  = 1.0;
@@ -44,7 +44,7 @@ input int    L1_MaxHoldBars          = 10;
 input group "=== 2. Layer 2 - Pending Limit Retrace ==="
 input bool   L2_UseLayer             = true;
 input int    L2_StreakCount          = 2;
-input ENUM_STREAK_CALC_MODE L2_StreakCalcMode = STREAK_CALC_HIGH_LOW;
+input ENUM_STREAK_CALC_MODE L2_StreakCalcMode = STREAK_CALC_HIGH_LOW; //StreakCalcMode
 input double L2_RetracePercent       = 40.0; // skala 0-100
 input int    L2_MaxConsecutiveTrades = 4;
 input bool   L2_UseStaticLot         = true;
@@ -66,7 +66,7 @@ input int    L2_MaxHoldBars          = 10;
 input group "=== 3. Layer 3 - Pending Limit Retrace ==="
 input bool   L3_UseLayer             = true;
 input int    L3_StreakCount          = 2;
-input ENUM_STREAK_CALC_MODE L3_StreakCalcMode = STREAK_CALC_HIGH_LOW;
+input ENUM_STREAK_CALC_MODE L3_StreakCalcMode = STREAK_CALC_HIGH_LOW; //StreakCalcMode
 input double L3_RetracePercent       = 70.0; // skala 0-100
 input int    L3_MaxConsecutiveTrades = 4;
 input bool   L3_UseStaticLot         = true;
@@ -94,11 +94,11 @@ input bool BlockNewTradeAfterWeekendClose = true;
 input group "=== 5. Session & Day Filter ==="
 input bool UseSessionFilter    = false;
 input bool EnableAsianSession  = true;
-input int  AsianStartHour      = 1;
+input int  AsianStartHour      = 0;
 input int  AsianEndHour        = 7;
 input bool EnableLondonSession = true;
 input int  LondonStartHour     = 7;
-input int  LondonEndHour       = 16;
+input int  LondonEndHour       = 15;
 input bool EnableUSSession     = true;
 input int  USStartHour         = 14;
 input int  USEndHour           = 23;
@@ -114,7 +114,7 @@ input bool TradeFriday   = true;
 input group "=== 6. System Filter ==="
 input bool   UseSpreadFilter      = true;
 input double MaxSpreadPoints      = 500;
-input int    MaxTotalOpenPositions = 3;
+input int    MaxTotalOpenPositions = 10;
 input double SL_BufferPoints      = 0;
 input int    MagicNumber          = 777007;
 

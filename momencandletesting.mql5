@@ -24,7 +24,7 @@ enum ENUM_STREAK_CALC_MODE
 input group "=== 1. Layer 1 - Market Instant ==="
 input bool   L1_UseLayer             = true;
 input int    L1_StreakCount          = 2;
-input ENUM_STREAK_CALC_MODE L1_StreakCalcMode = STREAK_CALC_OPEN_CLOSE; // streakcalcmode
+input ENUM_STREAK_CALC_MODE L1_StreakCalcMode = STREAK_CALC_OPEN_CLOSE; 
 input int    L1_MaxConsecutiveTrades = 4;
 input bool   L1_UseStaticLot         = true;
 input double L1_StaticLotSize        = 0.03;
@@ -66,7 +66,7 @@ input int    L2_MaxHoldBars          = 10;
 input group "=== 3. Layer 3 - Pending Limit Retrace ==="
 input bool   L3_UseLayer             = true;
 input int    L3_StreakCount          = 2;
-input ENUM_STREAK_CALC_MODE L3_StreakCalcMode = STREAK_CALC_HIGH_LOW;//streakcalcmode
+input ENUM_STREAK_CALC_MODE L3_StreakCalcMode = STREAK_CALC_HIGH_LOW;
 input double L3_RetracePercent       = 70.0; 
 input int    L3_MaxConsecutiveTrades = 4;
 input bool   L3_UseStaticLot         = true;
@@ -114,7 +114,7 @@ input bool TradeFriday   = true;
 input group "=== 6. System Filter ==="
 input bool   UseSpreadFilter      = true;
 input double MaxSpreadPoints      = 500;
-input int    MaxTotalOpenPositions = 5;
+input int    MaxTotalOpenPositions = 3;
 input double SL_BufferPoints      = 0;
 input int    MagicNumber          = 777007;
 
@@ -123,7 +123,7 @@ input group "=== 7. Custom Fitness - Fast Generic Algorithm (Custom Max) ==="
 input double Fitness_W_RecoveryFactor = 0.4;   
 input double Fitness_W_EquityR2       = 0.4;   
 input double Fitness_W_WinRate        = 0.2;   
-input int    Fitness_MinTrades        = 100;   
+input int    Fitness_MinTrades        = 800;   
 input double Fitness_MaxDD_Percent    = 30.0;  
 input double Fitness_RF_NormCap       = 5.0;   
 
@@ -732,18 +732,14 @@ double OnTester()
                     + Fitness_W_EquityR2*r2
                     + Fitness_W_WinRate*winRate) * tradeFactor;
 
-   // --- Simpan data tambahan per-pass (termasuk WinRate) via FrameAdd ---
-   // Data ini TIDAK otomatis muncul jadi kolom baru di tabel Optimization Results.
-   // Ambil datanya pakai script terpisah (FrameFirst/FrameNext) -> lihat catatan di bawah.
-   double frameData[5];
-   frameData[0] = winRate * 100.0;   // WinRate dalam persen
-   frameData[1] = RF;                // Recovery Factor mentah (belum dinormalisasi)
-   frameData[2] = r2;                // R^2 kurva equity
-   frameData[3] = trades;            // Total trade
-   frameData[4] = netProfit;         // Net profit
+   // --- MODE SIMPEL: return WinRate murni (persen) ---
+   // Kolom "Result" di tabel Optimization Results otomatis nampilin angka ini,
+   // TANPA perlu FrameAdd/extract CSV. Tinggal klik header "Result" -> sort descending.
+   // DD hard cutoff & MinTrades TETAP jalan (skip kombinasi noise/beresiko),
+   // tapi urutan rank sekarang murni WR, bukan gabungan RF+R2+WinRate.
+   return winRate * 100.0;
 
-   FrameAdd(StringFormat("WR=%.2f%%", winRate*100.0), 1, fitness, frameData);
-
-   return fitness;
+   // --- Kalau mau balik ke mode gabungan (RF+R2+WinRate), comment baris return diatas, uncomment ini: ---
+   // return fitness;
   }
 //+------------------------------------------------------------------+

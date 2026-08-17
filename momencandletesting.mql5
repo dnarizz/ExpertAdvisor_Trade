@@ -45,7 +45,7 @@ input group "=== 2. Layer 2 - Pending Limit Retrace ==="
 input bool   L2_UseLayer             = true;
 input int    L2_StreakCount          = 2;
 input ENUM_STREAK_CALC_MODE L2_StreakCalcMode = STREAK_CALC_HIGH_LOW;
-input double L2_RetracePercent       = 40.0; 
+input double L2_RetracePercent       = 40.0;
 input int    L2_MaxConsecutiveTrades = 4;
 input bool   L2_UseStaticLot         = true;
 input double L2_StaticLotSize        = 0.03;
@@ -67,7 +67,7 @@ input group "=== 3. Layer 3 - Pending Limit Retrace ==="
 input bool   L3_UseLayer             = true;
 input int    L3_StreakCount          = 2;
 input ENUM_STREAK_CALC_MODE L3_StreakCalcMode = STREAK_CALC_HIGH_LOW;
-input double L3_RetracePercent       = 70.0; 
+input double L3_RetracePercent       = 70.0;
 input int    L3_MaxConsecutiveTrades = 4;
 input bool   L3_UseStaticLot         = true;
 input double L3_StaticLotSize        = 0.03;
@@ -110,8 +110,25 @@ input bool TradeWednesday= true;
 input bool TradeThursday = true;
 input bool TradeFriday   = true;
 
+//================== INPUT: GROUP 6 - TREND FILTER (ADX) ==================
+input group "=== 6. Trend Filter (ADX) ==="
+input bool   UseADXFilter = false;
+input int    ADX_Period   = 14;
+input double ADX_MinLevel = 25.0;   
+
+input group "=== 6b. Trend Filter (MA Alignment) ==="
+input bool          UseMAFilter   = false; 
+input int           MA_FastPeriod = 20;
+input int           MA_SlowPeriod = 50;
+input ENUM_MA_METHOD MA_Method    = MODE_EMA;
+
+input group "=== 6c. Trend Filter (Choppiness Index) ==="
+input bool   UseChoppinessFilter = false; 
+input int    Choppiness_Period   = 14;
+input double Choppiness_MaxLevel = 61.8;  
+
 //================== INPUT: GROUP 6 - SYSTEM FILTER ==================
-input group "=== 6. System Filter ==="
+input group "=== 7. System Filter ==="
 input bool   UseSpreadFilter      = true;
 input double MaxSpreadPoints      = 500;
 input int    MaxTotalOpenPositions = 3;
@@ -119,13 +136,13 @@ input double SL_BufferPoints      = 0;
 input int    MagicNumber          = 777007;
 
 //================== INPUT: GROUP 7 - CUSTOM FITNESS (OnTester) ==================
-input group "=== 7. Custom Fitness - Fast Generic Algorithm (Custom Max) ==="
-input double Fitness_W_RecoveryFactor = 0.4;   
-input double Fitness_W_EquityR2       = 0.4;   
-input double Fitness_W_WinRate        = 0.2;   
-input int    Fitness_MinTrades        = 800;   
-input double Fitness_MaxDD_Percent    = 30.0;  
-input double Fitness_RF_NormCap       = 5.0;   
+input group "=== 8. Custom Fitness - Fast Generic Algorithm (Custom Max) ==="
+input double Fitness_W_RecoveryFactor = 0.4;   // bobot Recovery Factor (net profit vs DD)
+input double Fitness_W_EquityR2       = 0.4;   // bobot kelurusan kurva equity (growth stabil)
+input double Fitness_W_WinRate        = 0.2;   // bobot win rate
+input int    Fitness_MinTrades        = 100;   // dibawah ini fitness dipangkas proporsional
+input double Fitness_MaxDD_Percent    = 30.0;  // hard cutoff: DD diatas ini fitness = 0
+input double Fitness_RF_NormCap       = 5.0;   // RF dinormalisasi thd angka ini (di-cap 1.0)
 
 //================== STRUCT ==================
 struct SLayerParams
@@ -156,6 +173,7 @@ SLayerParams g_layers[3];
 int          g_consecutive[3];   // 0=L1,1=L2,2=L3 -- naik hanya saat FILL (lihat OnTradeTransaction)
 datetime     g_lastBarTime = 0;
 double       g_equityCurve[];    // dicatat tiap bar baru, dipakai OnTester utk hitung R^2
+int          g_adxHandle = INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
 //| OnInit                                                            |
@@ -236,8 +254,43 @@ int OnInit()
       Print("WARNING L3: UseStreakSizeFilter dinonaktifkan otomatis karena UseStaticSLPoint=true (konflik).");
 
    trade.SetExpertMagicNumber(MagicNumber);
+
+   if(UseADXFilter)
+     {
+      g_adxHandle = iADX(_Symbol, _Period, ADX_Period);
+      if(g_adxHandle == INVALID_HANDLE)
+        {
+         Print("ERROR: Gagal buat handle ADX. EA berhenti.");
+         return(INIT_FAILED);
+        }
+     }
+
    Print("EA V5.3 Initialized. Symbol=", _Symbol, " Period=", EnumToString(_Period));
    return(INIT_SUCCEEDED);
+  }
+
+//+------------------------------------------------------------------+
+//| OnDeinit                                                           |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+  {
+   if(g_adxHandle != INVALID_HANDLE) IndicatorRelease(g_adxHandle);
+  }
+
+//+------------------------------------------------------------------+
+//| Trend Filter (ADX) -- true = market trending, boleh entry        |
+//+------------------------------------------------------------------+
+bool IsTrendingByADX()
+  {
+   if(!UseADXFilter) return true; // filter off -> selalu lolos
+   if(g_adxHandle == INVALID_HANDLE) return true; // safety fallback
+
+   double adxBuf[];
+   ArraySetAsSeries(adxBuf, true);
+   if(CopyBuffer(g_adxHandle, 0, 1, 1, adxBuf) <= 0) return true; // gagal ambil data -> jgn block entry
+
+   double adxValue = adxBuf[0]; // pakai bar closed terakhir (index 1 = bar 1)
+   return (adxValue >= ADX_MinLevel);
   }
 
 //+------------------------------------------------------------------+
@@ -322,6 +375,7 @@ void OnTick()
    if(UseSpreadFilter && IsSpreadHigh()) return;
    if(UseDayFilter && !IsDayAllowed()) return;
    if(UseSessionFilter && !IsSessionAllowed()) return;
+   if(UseADXFilter && !IsTrendingByADX()) return;
    if(UseWeekendClose && BlockNewTradeAfterWeekendClose && IsPastWeekendCloseHour()) return;
 
    if(g_layers[0].enabled) ProcessLayerSignal(0, curBar);

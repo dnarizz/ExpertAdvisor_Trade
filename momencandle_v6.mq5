@@ -1,17 +1,4 @@
-//+------------------------------------------------------------------+
-//| MomenCandleStreak_V6_0.mq5                                       |
-//| V6.0: Bug fixes + 6 fitur baru utk max WR + konsisten compound  |
-//| Changelog dari V5.3:                                              |
-//|  - FIX: Spread filter sekarang dipanggil (sebelumnya dead code)  |
-//|  - FIX: OnTester pakai composite fitness (bukan WR murni)        |
-//|  - NEW: Multi-Timeframe Confirmation (MTF Filter)                |
-//|  - NEW: Candle Body Ratio Filter                                  |
-//|  - NEW: Break-Even Stop (BEP)                                    |
-//|  - NEW: Anti-Revenge Cooldown                                     |
-//|  - NEW: Dynamic RRR (ATR-Adaptive)                               |
-//|  - NEW: Equity Curve Trading (Meta-Filter)                       |
-//|  - OPTIMIZED: Default parameters untuk XAUUSD H4                |
-//+------------------------------------------------------------------+
+
 #property copyright "Custom EA - V6.0 Max WR + Consistent Compound"
 #property version   "6.00"
 #property strict

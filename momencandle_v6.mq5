@@ -15,7 +15,7 @@ enum ENUM_STREAK_CALC_MODE
 //================== INPUT: GROUP 1 - LAYER 1 (MARKET) ==================
 input group "=== 1. Layer 1 - Market Instant ==="
 input bool   L1_UseLayer             = true;
-input bool   L1_ReverseMode          = false;   // false = ikut arah momentum, true = berlawanan arah momentum
+input bool   L1_ReverseMode          = false;  
 input int    L1_StreakCount          = 2;
 input ENUM_STREAK_CALC_MODE L1_StreakCalcMode = STREAK_CALC_OPEN_CLOSE;
 input int    L1_MaxConsecutiveTrades = 7;
@@ -27,20 +27,20 @@ input double L1_StaticSLPoints       = 2500;
 input bool   L1_UseStreakSizeFilter  = false;
 input double L1_MinStreakPoints      = 200;
 input double L1_MaxStreakPoints      = 3000;
-input double L1_RRR                  = 1.0;     // 0 = tanpa TP (exit hanya lewat SL/trailing/max hold)
+input double L1_RRR                  = 1.0;    
 input bool   L1_UseTrailingStop      = true;
-input double L1_TrailStartR          = 0.8;     // Trailing aktif saat profit >= N x R
-input double L1_TrailDistR           = 1.0;     // Jarak SL di belakang harga = N x R
+input double L1_TrailStartR          = 0.8;    
+input double L1_TrailDistR           = 1.0;     
 input bool   L1_UseMaxHoldBars       = false;
 input int    L1_MaxHoldBars          = 12;
 
 //================== INPUT: GROUP 2 - LAYER 2 (PENDING) ==================
 input group "=== 2. Layer 2 - Pending Limit ==="
 input bool   L2_UseLayer             = false;
-input bool   L2_ReverseMode          = false;   // true = limit dipasang di atas/bawah ekstrem streak (fade)
+input bool   L2_ReverseMode          = false;  
 input int    L2_StreakCount          = 2;
 input ENUM_STREAK_CALC_MODE L2_StreakCalcMode = STREAK_CALC_HIGH_LOW;
-input double L2_RetracePercent       = 40.0;    // skala 0-100 (mode reverse: jarak ekstensi dari ekstrem)
+input double L2_RetracePercent       = 40.0;    
 input int    L2_MaxConsecutiveTrades = 4;
 input bool   L2_UseStaticLot         = true;
 input double L2_StaticLotSize        = 0.03;

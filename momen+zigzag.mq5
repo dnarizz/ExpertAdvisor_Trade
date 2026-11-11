@@ -237,6 +237,9 @@ int OnInit()
          Print("ERROR: Gagal memuat indikator Examples\\ZigZag. Pastikan indikator tersedia di folder Indicators\\Examples.");
          return(INIT_FAILED);
         }
+      
+      // --- TAMBAHAN: Tampilkan garis ZigZag otomatis di Chart utama (Subwindow 0) ---
+      ChartIndicatorAdd(0, 0, g_zzHandle);
      }
 
    trade.SetExpertMagicNumber(MagicNumber);
@@ -252,6 +255,10 @@ void OnDeinit(const int reason)
   {
    if(g_zzHandle != INVALID_HANDLE)
      {
+      // --- TAMBAHAN: Hapus garis ZigZag dari chart saat EA dilepas ---
+      string shortName = ChartIndicatorName(0, 0, ChartIndicatorsTotal(0, 0) - 1);
+      ChartIndicatorDelete(0, 0, shortName);
+
       IndicatorRelease(g_zzHandle);
       g_zzHandle = INVALID_HANDLE;
      }

@@ -1,5 +1,5 @@
-#property copyright "Custom EA - V6.4 (ZigZag Momentum & Wave Quota)"
-#property version   "6.40"
+#property copyright "Custom EA - V6.5 (ZigZag Momentum, Wave Quota & Daily P/L Limit)"
+#property version   "6.50"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -125,6 +125,14 @@ input int             ZZ_Deviation    = 5;              // ZigZag Deviation
 input int             ZZ_Backstep     = 3;              // ZigZag Backstep
 input int             ZZ_LookbackBars = 300;            // Bar pencarian titik ZigZag
 
+//================== INPUT: GROUP 8 - DAILY PROFIT & LOSS LIMIT ==================
+input group "=== 8. Daily Profit & Loss Limit ==="
+input bool   UseDailyProfitLossLimit  = true;           // Aktifkan Batas Profit/Loss Harian
+input double DailyProfitTargetPercent = 10.0;           // Target Profit Harian (%) (0 = Nonaktif)
+input double DailyMaxLossPercent      = 5.0;            // Batas Max Loss Harian (%) (0 = Nonaktif, isi positif misal 5.0)
+input bool   IncludeFloatingInDailyPL = true;           // Ikut hitung Floating P/L posisi terbuka
+input bool   CloseAllOnDailyLimitHit  = true;           // Tutup semua posisi & pending saat batas tercapai
+
 //================== STRUCT & GLOBAL ==================
 struct SLayerParams
   {
@@ -159,6 +167,11 @@ int          g_lastZZDir[3];          // Menyimpan arah ZigZag terakhir (1 = Nai
 datetime     g_lastZZAnchorTime[3];   // Menyimpan waktu titik pangkal gelombang ZigZag
 int          g_zzHandle = INVALID_HANDLE;
 datetime     g_lastBarTime = 0;
+
+// Variabel kontrol Daily Profit/Loss Limit
+datetime     g_dayStartTime      = 0;
+double       g_dayStartBalance   = 0.0;
+bool         g_dailyLimitReached = false;
 
 const double TRAIL_MIN_STEP_R = 0.02;  // SL trailing hanya digeser jika membaik >= 0.02R
 
@@ -209,7 +222,10 @@ int OnInit()
       g_lastZZDir[i]        = 0;
       g_lastZZAnchorTime[i] = 0;
      }
-   g_lastBarTime = 0;
+   g_lastBarTime       = 0;
+   g_dayStartTime      = 0;
+   g_dayStartBalance   = 0.0;
+   g_dailyLimitReached = false;
 
    SetLayer(0, "L1", L1_UseLayer, L1_ReverseMode, L1_StreakCount, L1_StreakCalcMode,
             0.0, L1_MaxConsecutiveTrades, L1_UseStaticLot, L1_StaticLotSize, L1_RiskPercentPerTrade,
@@ -238,13 +254,13 @@ int OnInit()
          return(INIT_FAILED);
         }
       
-      // --- TAMBAHAN: Tampilkan garis ZigZag otomatis di Chart utama (Subwindow 0) ---
+      // Tampilkan garis ZigZag otomatis di Chart utama (Subwindow 0)
       ChartIndicatorAdd(0, 0, g_zzHandle);
      }
 
    trade.SetExpertMagicNumber(MagicNumber);
 
-   Print("EA V6.4 Initialized. Symbol=", _Symbol, " Period=", EnumToString(_Period));
+   Print("EA V6.5 Initialized. Symbol=", _Symbol, " Period=", EnumToString(_Period));
    return(INIT_SUCCEEDED);
   }
 
@@ -255,13 +271,142 @@ void OnDeinit(const int reason)
   {
    if(g_zzHandle != INVALID_HANDLE)
      {
-      // --- TAMBAHAN: Hapus garis ZigZag dari chart saat EA dilepas ---
       string shortName = ChartIndicatorName(0, 0, ChartIndicatorsTotal(0, 0) - 1);
       ChartIndicatorDelete(0, 0, shortName);
 
       IndicatorRelease(g_zzHandle);
       g_zzHandle = INVALID_HANDLE;
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Hitung Realized P/L hari ini (berdasarkan MagicNumber & Symbol)  |
+//+------------------------------------------------------------------+
+double GetTodayRealizedPL(datetime dayStart)
+  {
+   if(!HistorySelect(dayStart, TimeCurrent())) return 0.0;
+
+   double totalPL = 0.0;
+   int totalDeals = HistoryDealsTotal();
+   for(int i = 0; i < totalDeals; i++)
+     {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      if((int)HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != MagicNumber) continue;
+      if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
+
+      ENUM_DEAL_TYPE dType = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+      if(dType != DEAL_TYPE_BUY && dType != DEAL_TYPE_SELL) continue;
+
+      totalPL += HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+               + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+               + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION)
+               + HistoryDealGetDouble(dealTicket, DEAL_FEE);
+     }
+   return totalPL;
+  }
+
+//+------------------------------------------------------------------+
+//| Hitung Floating P/L saat ini (berdasarkan MagicNumber & Symbol)  |
+//+------------------------------------------------------------------+
+double GetFloatingPL()
+  {
+   double floating = 0.0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+
+      floating += PositionGetDouble(POSITION_PROFIT)
+                + PositionGetDouble(POSITION_SWAP);
+     }
+   return floating;
+  }
+
+//+------------------------------------------------------------------+
+//| Tutup semua posisi & hapus semua pending order milik EA ini      |
+//+------------------------------------------------------------------+
+void CloseAllMyPositionsAndOrders()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      trade.PositionClose(ticket);
+     }
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(!OrderSelect(ticket)) continue;
+      if((int)OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+      trade.OrderDelete(ticket);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Cek & Update Status Batas Profit/Loss Harian                     |
+//+------------------------------------------------------------------+
+bool IsDailyLimitHit()
+  {
+   if(!UseDailyProfitLossLimit) return false;
+
+   datetime now      = TimeCurrent();
+   datetime dayStart = now - (now % 86400); // Jam 00:00:00 hari ini
+
+   // Reset otomatis saat berganti hari baru (atau saat EA baru dipasang)
+   if(dayStart != g_dayStartTime)
+     {
+      g_dayStartTime      = dayStart;
+      g_dailyLimitReached = false;
+
+      // Rekonstruksi saldo awal hari (aman meskipun EA di-restart di tengah hari)
+      double realizedToday = GetTodayRealizedPL(dayStart);
+      g_dayStartBalance    = AccountInfoDouble(ACCOUNT_BALANCE) - realizedToday;
+      if(g_dayStartBalance <= 0) g_dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+
+      Print("Hari baru dimulai (", TimeToString(dayStart, TIME_DATE), "). Saldo Awal Hari = ", DoubleToString(g_dayStartBalance, 2));
+     }
+
+   // Jika hari ini sudah kena limit, pastikan posisi/order bersih (jika opsi aktif) dan blokir trade
+   if(g_dailyLimitReached)
+     {
+      if(CloseAllOnDailyLimitHit) CloseAllMyPositionsAndOrders();
+      return true;
+     }
+
+   if(g_dayStartBalance <= 0) return false;
+
+   double totalPL = GetTodayRealizedPL(dayStart);
+   if(IncludeFloatingInDailyPL)
+      totalPL += GetFloatingPL();
+
+   double pctPL = (totalPL / g_dayStartBalance) * 100.0;
+
+   // Cek Target Profit Harian (+%)
+   if(DailyProfitTargetPercent > 0.0 && pctPL >= DailyProfitTargetPercent)
+     {
+      g_dailyLimitReached = true;
+      Print("TARGET PROFIT HARIAN TERCAPAI: +", DoubleToString(pctPL, 2), "% (Target: +", DoubleToString(DailyProfitTargetPercent, 2), "%). Stop trade hari ini, lanjut besok.");
+      if(CloseAllOnDailyLimitHit) CloseAllMyPositionsAndOrders();
+      return true;
+     }
+
+   // Cek Max Loss Harian (-%)
+   double maxLossLimit = -MathAbs(DailyMaxLossPercent);
+   if(DailyMaxLossPercent > 0.0 && pctPL <= maxLossLimit)
+     {
+      g_dailyLimitReached = true;
+      Print("BATAS LOSS HARIAN TERCAPAI: ", DoubleToString(pctPL, 2), "% (Batas: ", DoubleToString(maxLossLimit, 2), "%). Stop trade hari ini, lanjut besok.");
+      if(CloseAllOnDailyLimitHit) CloseAllMyPositionsAndOrders();
+      return true;
+     }
+
+   return false;
   }
 
 //+------------------------------------------------------------------+
@@ -369,6 +514,9 @@ double GetStreakRange(ENUM_STREAK_CALC_MODE mode, double openFirst, double close
 //+------------------------------------------------------------------+
 void OnTick()
   {
+   // Cek batas profit/loss harian setiap tick
+   if(IsDailyLimitHit()) return;
+
    ManageTrailingStop();
    ManageMaxHoldBars();
    if(UseWeekendClose) CheckWeekendClose();
@@ -719,20 +867,7 @@ bool IsPastWeekendCloseHour()
 void CheckWeekendClose()
   {
    if(!IsPastWeekendCloseHour()) return;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(!PositionSelectByTicket(ticket)) continue;
-      if((int)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-      trade.PositionClose(ticket);
-     }
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = OrderGetTicket(i);
-      if(!OrderSelect(ticket)) continue;
-      if((int)OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
-      trade.OrderDelete(ticket);
-     }
+   CloseAllMyPositionsAndOrders();
   }
 
 //+------------------------------------------------------------------+

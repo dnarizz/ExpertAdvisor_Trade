@@ -1,6 +1,5 @@
-#property copyright "Custom EA - V6.5 (ZigZag Momentum, Wave Quota & Daily P/L Limit)"
-#property version   "6.50"
-#property strict
+#property copyright "Custom EA - V6.6 (ZigZag Momentum, Wave Quota & Daily P/L Limit)"
+#property version   "6.60"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -12,10 +11,17 @@ enum ENUM_STREAK_CALC_MODE
    STREAK_CALC_HIGH_LOW     // High tertinggi ke Low terendah seluruh streak
   };
 
+enum ENUM_TESTER_FITNESS
+  {
+   TESTER_WINRATE_FILTERED, // Win Rate (%) dgn syarat Net Profit > 0 & Min Trades
+   TESTER_PROFIT_FACTOR,    // Profit Factor dgn syarat Min Trades
+   TESTER_COMPOSITE_SCORE   // Skor Gabungan: WinRate * RecoveryFactor * ln(Trades+1)
+  };
+
 //================== INPUT: GROUP 1 - LAYER 1 (MARKET) ==================
 input group "=== 1. Layer 1 - Market Instant ==="
 input bool   L1_UseLayer             = true;
-input bool   L1_ReverseMode          = false;   
+input bool   L1_ReverseMode          = false;
 input int    L1_StreakCount          = 2;
 input ENUM_STREAK_CALC_MODE L1_StreakCalcMode = STREAK_CALC_OPEN_CLOSE;
 input int    L1_MaxConsecutiveTrades = 7;       // Maks trade per 1 rentang gelombang ZigZag
@@ -27,20 +33,20 @@ input double L1_StaticSLPoints       = 2500;
 input bool   L1_UseStreakSizeFilter  = false;
 input double L1_MinStreakPoints      = 200;
 input double L1_MaxStreakPoints      = 3000;
-input double L1_RRR                  = 1.0;     
+input double L1_RRR                  = 1.0;
 input bool   L1_UseTrailingStop      = true;
-input double L1_TrailStartR          = 0.8;     
-input double L1_TrailDistR           = 1.0;     
+input double L1_TrailStartR          = 0.8;
+input double L1_TrailDistR           = 1.0;     // Catatan: agar bisa lock profit sebelum TP, set < L1_RRR (mis. 0.5)
 input bool   L1_UseMaxHoldBars       = false;
 input int    L1_MaxHoldBars          = 12;
 
 //================== INPUT: GROUP 2 - LAYER 2 (PENDING) ==================
 input group "=== 2. Layer 2 - Pending Limit ==="
 input bool   L2_UseLayer             = false;
-input bool   L2_ReverseMode          = false;  
+input bool   L2_ReverseMode          = false;
 input int    L2_StreakCount          = 2;
 input ENUM_STREAK_CALC_MODE L2_StreakCalcMode = STREAK_CALC_HIGH_LOW;
-input double L2_RetracePercent       = 40.0;  
+input double L2_RetracePercent       = 40.0;
 input int    L2_MaxConsecutiveTrades = 4;       // Maks trade per 1 rentang gelombang ZigZag
 input bool   L2_UseStaticLot         = true;
 input double L2_StaticLotSize        = 0.03;
@@ -85,11 +91,11 @@ input int    L3_MaxHoldBars          = 10;
 //================== INPUT: GROUP 4 - WEEKEND CLOSE ==================
 input group "=== 4. Weekend Close ==="
 input bool UseWeekendClose                = true;
-input int  WeekendCloseHour               = 20;
+input int  WeekendCloseHour               = 20;   // Jam Server Broker (hari Jumat)
 input bool BlockNewTradeAfterWeekendClose = true;
 
 //================== INPUT: GROUP 5 - SESSION & DAY FILTER ==================
-input group "=== 5. Session & Day Filter ==="
+input group "=== 5. Session & Day Filter (Jam Server Broker) ==="
 input bool UseSessionFilter    = false;
 input bool EnableAsianSession  = true;
 input int  AsianStartHour      = 0;
@@ -107,14 +113,18 @@ input bool TradeTuesday   = true;
 input bool TradeWednesday = true;
 input bool TradeThursday  = true;
 input bool TradeFriday    = true;
+input bool TradeSaturday  = false;
+input bool TradeSunday    = false;
 
 //================== INPUT: GROUP 6 - SYSTEM FILTER ==================
 input group "=== 6. System Filter ==="
-input bool   UseSpreadFilter       = true;
-input double MaxSpreadPoints       = 500;
-input int    MaxTotalOpenPositions = 10;
-input double SL_BufferPoints       = 0;
-input int    MagicNumber           = 777070;
+input bool   UseSpreadFilter            = true;
+input double MaxSpreadPoints            = 500;
+input int    MaxTotalOpenPositions      = 10;
+input bool   CountPendingInMaxPositions = true;  // Ikut hitung pending order dalam batas posisi
+input double MaxLotCap                  = 0.0;   // Batas atas lot pengaman (0 = ikuti max broker)
+input double SL_BufferPoints            = 0;
+input int    MagicNumber                = 777070;
 
 //================== INPUT: GROUP 7 - ZIGZAG FILTER ==================
 input group "=== 7. ZigZag Trend & Quota Filter ==="
@@ -129,9 +139,14 @@ input int             ZZ_LookbackBars = 300;            // Bar pencarian titik Z
 input group "=== 8. Daily Profit & Loss Limit ==="
 input bool   UseDailyProfitLossLimit  = true;           // Aktifkan Batas Profit/Loss Harian
 input double DailyProfitTargetPercent = 10.0;           // Target Profit Harian (%) (0 = Nonaktif)
-input double DailyMaxLossPercent      = 5.0;            // Batas Max Loss Harian (%) (0 = Nonaktif, isi positif misal 5.0)
-input bool   IncludeFloatingInDailyPL = true;           // Ikut hitung Floating P/L posisi terbuka
+input double DailyMaxLossPercent      = 5.0;            // Batas Max Loss Harian (%) (0 = Nonaktif, isi positif)
+input bool   IncludeFloatingInDailyPL = true;           // Ikut hitung perubahan Floating P/L hari ini
 input bool   CloseAllOnDailyLimitHit  = true;           // Tutup semua posisi & pending saat batas tercapai
+
+//================== INPUT: GROUP 9 - OPTIMIZATION FITNESS ==================
+input group "=== 9. Optimization Fitness (OnTester) ==="
+input ENUM_TESTER_FITNESS TesterFitnessMode = TESTER_WINRATE_FILTERED;
+input int                 TesterMinTrades   = 30;       // Minimal jumlah trade agar skor optimasi valid
 
 //================== STRUCT & GLOBAL ==================
 struct SLayerParams
@@ -161,22 +176,38 @@ struct SLayerParams
   };
 
 SLayerParams g_layers[3];
-int          g_consecutive[3];        // Jumlah trade yang sudah diambil pada fase saat ini
-int          g_lastSignal[3];         // Dipakai jika UseZigZagFilter = false
-int          g_lastZZDir[3];          // Menyimpan arah ZigZag terakhir (1 = Naik, -1 = Turun)
-datetime     g_lastZZAnchorTime[3];   // Menyimpan waktu titik pangkal gelombang ZigZag
-int          g_zzHandle = INVALID_HANDLE;
-datetime     g_lastBarTime = 0;
+int          g_consecutive[3];
+int          g_lastSignal[3];
+int          g_lastZZDir[3];
+datetime     g_lastZZAnchorTime[3];
+ulong        g_lastCountedOrder[3];
 
-// Variabel kontrol Daily Profit/Loss Limit
+int          g_zzHandle       = INVALID_HANDLE;
+bool         g_zzAddedToChart = false;
+string       g_zzShortName    = "";
+datetime     g_lastBarTime    = 0;
+
+// Variabel kontrol Daily Profit/Loss Limit (ter-cache)
 datetime     g_dayStartTime      = 0;
 double       g_dayStartBalance   = 0.0;
+double       g_dayStartFloating  = 0.0;
+double       g_todayRealizedPL   = 0.0;
 bool         g_dailyLimitReached = false;
+bool         g_realizedDirty     = true;
+int          g_lastPosTotal      = -1;
 
-const double TRAIL_MIN_STEP_R = 0.02;  // SL trailing hanya digeser jika membaik >= 0.02R
+// Variabel anti-spam retry saat close/delete gagal
+datetime     g_lastCloseRetryTime     = 0;
+datetime     g_lastMaxHoldRetryTime   = 0;
+datetime     g_lastCleanupRetryTime   = 0;
+bool         g_hasPendingMaxHoldClose = false;
+bool         g_hasPendingOrderCleanup = false;
+
+const double TRAIL_MIN_STEP_R         = 0.02; // Minimal perbaikan SL trailing dalam satuan R
+const int    CLOSE_RETRY_COOLDOWN_SEC = 3;    // Jeda retry jika Close/Delete gagal
 
 //+------------------------------------------------------------------+
-//| Isi parameter satu layer                                          |
+//| Isi parameter satu layer                                         |
 //+------------------------------------------------------------------+
 void SetLayer(int idx, string tag, bool enabled, bool reverse, int streakCount, ENUM_STREAK_CALC_MODE calcMode,
               double retracePercent, int maxConsecutive, bool useStaticLot, double staticLot, double riskPercent,
@@ -196,7 +227,7 @@ void SetLayer(int idx, string tag, bool enabled, bool reverse, int streakCount, 
    g_layers[idx].riskPercent     = riskPercent;
    g_layers[idx].useStaticSL     = useStaticSL;
    g_layers[idx].staticSLPoints  = staticSLPoints;
-   g_layers[idx].useStreakFilter = useStreakFilter && !useStaticSL;
+   g_layers[idx].useStreakFilter = useStreakFilter; // Tidak lagi dinonaktifkan paksa saat StaticSL aktif
    g_layers[idx].minStreakPoints = minStreak;
    g_layers[idx].maxStreakPoints = maxStreak;
    g_layers[idx].rrr             = rrr;
@@ -206,12 +237,82 @@ void SetLayer(int idx, string tag, bool enabled, bool reverse, int streakCount, 
    g_layers[idx].limitExpireBars = limitExpireBars;
    g_layers[idx].useMaxHold      = useMaxHold;
    g_layers[idx].maxHoldBars     = maxHoldBars;
-   if(useStreakFilter && useStaticSL)
-      Print("WARNING ", tag, ": UseStreakSizeFilter dinonaktifkan otomatis karena UseStaticSLPoint=true (konflik).");
+
+   if(enabled && useTrailing && rrr > 0.0 && trailDistR >= rrr)
+      Print("INFO ", tag, ": TrailDistR (", DoubleToString(trailDistR, 2), ") >= RRR (", DoubleToString(rrr, 2),
+            "). Trailing hanya mempersempit SL dan tidak akan mengunci profit sebelum TP tersentuh.");
   }
 
 //+------------------------------------------------------------------+
-//| OnInit                                                            |
+//| Validasi input sebelum inisialisasi                              |
+//+------------------------------------------------------------------+
+bool ValidateInputs()
+  {
+   if(MaxTotalOpenPositions < 1)
+     {
+      Print("ERROR: MaxTotalOpenPositions minimal 1.");
+      return false;
+     }
+   if(UseZigZagFilter && (ZZ_Depth < 1 || ZZ_LookbackBars < 10))
+     {
+      Print("ERROR: ZZ_Depth minimal 1 dan ZZ_LookbackBars minimal 10.");
+      return false;
+     }
+
+   for(int i = 0; i < 3; i++)
+     {
+      if(!g_layers[i].enabled) continue;
+      string t = g_layers[i].tag;
+
+      if(g_layers[i].streakCount < 1)
+        {
+         Print("ERROR ", t, ": StreakCount minimal 1.");
+         return false;
+        }
+      if(g_layers[i].maxConsecutive < 1)
+        {
+         Print("ERROR ", t, ": MaxConsecutiveTrades minimal 1.");
+         return false;
+        }
+      if(g_layers[i].useStaticSL && g_layers[i].staticSLPoints <= 0.0)
+        {
+         Print("ERROR ", t, ": StaticSLPoints harus > 0.");
+         return false;
+        }
+      if(g_layers[i].useStreakFilter && g_layers[i].minStreakPoints > g_layers[i].maxStreakPoints)
+        {
+         Print("ERROR ", t, ": MinStreakPoints tidak boleh lebih besar dari MaxStreakPoints.");
+         return false;
+        }
+      if(g_layers[i].useMaxHold && g_layers[i].maxHoldBars < 1)
+        {
+         Print("ERROR ", t, ": MaxHoldBars minimal 1.");
+         return false;
+        }
+      if(i > 0)
+        {
+         if(g_layers[i].limitExpireBars < 1)
+           {
+            Print("ERROR ", t, ": LimitExpireBars minimal 1.");
+            return false;
+           }
+         if(g_layers[i].retracePercent <= 0.0)
+           {
+            Print("ERROR ", t, ": RetracePercent harus > 0.");
+            return false;
+           }
+         if(!g_layers[i].reverse && !g_layers[i].useStaticSL && g_layers[i].retracePercent >= 100.0)
+           {
+            Print("ERROR ", t, ": RetracePercent harus < 100 saat mode normal & Dynamic SL.");
+            return false;
+           }
+        }
+     }
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| OnInit                                                           |
 //+------------------------------------------------------------------+
 int OnInit()
   {
@@ -221,11 +322,25 @@ int OnInit()
       g_lastSignal[i]       = 0;
       g_lastZZDir[i]        = 0;
       g_lastZZAnchorTime[i] = 0;
+      g_lastCountedOrder[i] = 0;
      }
-   g_lastBarTime       = 0;
-   g_dayStartTime      = 0;
-   g_dayStartBalance   = 0.0;
-   g_dailyLimitReached = false;
+
+   g_zzHandle               = INVALID_HANDLE;
+   g_zzAddedToChart         = false;
+   g_zzShortName            = "";
+   g_lastBarTime            = 0;
+   g_dayStartTime           = 0;
+   g_dayStartBalance        = 0.0;
+   g_dayStartFloating       = 0.0;
+   g_todayRealizedPL        = 0.0;
+   g_dailyLimitReached      = false;
+   g_realizedDirty          = true;
+   g_lastPosTotal           = -1;
+   g_lastCloseRetryTime     = 0;
+   g_lastMaxHoldRetryTime   = 0;
+   g_lastCleanupRetryTime   = 0;
+   g_hasPendingMaxHoldClose = false;
+   g_hasPendingOrderCleanup = false;
 
    SetLayer(0, "L1", L1_UseLayer, L1_ReverseMode, L1_StreakCount, L1_StreakCalcMode,
             0.0, L1_MaxConsecutiveTrades, L1_UseStaticLot, L1_StaticLotSize, L1_RiskPercentPerTrade,
@@ -245,6 +360,12 @@ int OnInit()
             L3_RRR, L3_UseTrailingStop, L3_TrailStartR, L3_TrailDistR,
             L3_LimitExpireBars, L3_UseMaxHoldBars, L3_MaxHoldBars);
 
+   if(!ValidateInputs())
+      return(INIT_PARAMETERS_INCORRECT);
+
+   if((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+      Print("WARNING: Akun bukan tipe Hedging. Tracking multi-layer, Trailing Stop, dan MaxHoldBars berbasis comment paling akurat pada akun Hedging.");
+
    if(UseZigZagFilter)
      {
       g_zzHandle = iCustom(_Symbol, ZZ_Timeframe, "Examples\\ZigZag", ZZ_Depth, ZZ_Deviation, ZZ_Backstep);
@@ -253,41 +374,86 @@ int OnInit()
          Print("ERROR: Gagal memuat indikator Examples\\ZigZag. Pastikan indikator tersedia di folder Indicators\\Examples.");
          return(INIT_FAILED);
         }
-      
-      // Tampilkan garis ZigZag otomatis di Chart utama (Subwindow 0)
-      ChartIndicatorAdd(0, 0, g_zzHandle);
+
+      // Hanya pasang ke chart jika timeframe sama & bukan optimasi non-visual
+      bool canDraw = (ZZ_Timeframe == PERIOD_CURRENT || ZZ_Timeframe == _Period)
+                  && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE));
+      if(canDraw)
+        {
+         int beforeTotal = ChartIndicatorsTotal(0, 0);
+         if(ChartIndicatorAdd(0, 0, g_zzHandle))
+           {
+            g_zzAddedToChart = true;
+            int afterTotal = ChartIndicatorsTotal(0, 0);
+            if(afterTotal > beforeTotal)
+               g_zzShortName = ChartIndicatorName(0, 0, afterTotal - 1);
+           }
+        }
      }
 
    trade.SetExpertMagicNumber(MagicNumber);
+   SetAutoFillingType();
 
-   Print("EA V6.5 Initialized. Symbol=", _Symbol, " Period=", EnumToString(_Period));
+   Print("EA V6.6 Initialized. Symbol=", _Symbol, " Period=", EnumToString(_Period));
    return(INIT_SUCCEEDED);
   }
 
 //+------------------------------------------------------------------+
-//| OnDeinit                                                          |
+//| OnDeinit                                                         |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   if(g_zzAddedToChart && g_zzHandle != INVALID_HANDLE)
+     {
+      int  total   = ChartIndicatorsTotal(0, 0);
+      bool deleted = false;
+      for(int i = total - 1; i >= 0; i--)
+        {
+         string name = ChartIndicatorName(0, 0, i);
+         int    h    = ChartIndicatorGet(0, 0, name);
+         if(h != INVALID_HANDLE)
+           {
+            bool match = (h == g_zzHandle);
+            IndicatorRelease(h);
+            if(match)
+              {
+               ChartIndicatorDelete(0, 0, name);
+               deleted = true;
+               break;
+              }
+           }
+        }
+      if(!deleted && g_zzShortName != "")
+         ChartIndicatorDelete(0, 0, g_zzShortName);
+
+      g_zzAddedToChart = false;
+      g_zzShortName    = "";
+     }
+
    if(g_zzHandle != INVALID_HANDLE)
      {
-      string shortName = ChartIndicatorName(0, 0, ChartIndicatorsTotal(0, 0) - 1);
-      ChartIndicatorDelete(0, 0, shortName);
-
       IndicatorRelease(g_zzHandle);
       g_zzHandle = INVALID_HANDLE;
      }
   }
 
 //+------------------------------------------------------------------+
-//| Hitung Realized P/L hari ini (berdasarkan MagicNumber & Symbol)  |
+//| GlobalVariable key helper (persisten baseline harian di live)    |
+//+------------------------------------------------------------------+
+string MakeGVKey(string suffix)
+  {
+   return "EAV66_" + _Symbol + "_" + IntegerToString(MagicNumber) + "_" + suffix;
+  }
+
+//+------------------------------------------------------------------+
+//| Hitung Realized P/L hari ini (MagicNumber & Symbol)              |
 //+------------------------------------------------------------------+
 double GetTodayRealizedPL(datetime dayStart)
   {
-   if(!HistorySelect(dayStart, TimeCurrent())) return 0.0;
+   if(!HistorySelect(dayStart, TimeCurrent() + 60)) return 0.0;
 
-   double totalPL = 0.0;
-   int totalDeals = HistoryDealsTotal();
+   double totalPL    = 0.0;
+   int    totalDeals = HistoryDealsTotal();
    for(int i = 0; i < totalDeals; i++)
      {
       ulong dealTicket = HistoryDealGetTicket(i);
@@ -307,7 +473,7 @@ double GetTodayRealizedPL(datetime dayStart)
   }
 
 //+------------------------------------------------------------------+
-//| Hitung Floating P/L saat ini (berdasarkan MagicNumber & Symbol)  |
+//| Hitung Floating P/L saat ini (MagicNumber & Symbol)              |
 //+------------------------------------------------------------------+
 double GetFloatingPL()
   {
@@ -326,73 +492,176 @@ double GetFloatingPL()
   }
 
 //+------------------------------------------------------------------+
-//| Tutup semua posisi & hapus semua pending order milik EA ini      |
+//| Hapus semua pending order milik EA ini (dengan cooldown retry)   |
 //+------------------------------------------------------------------+
-void CloseAllMyPositionsAndOrders()
+void CancelAllMyPendingOrders()
   {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(!PositionSelectByTicket(ticket)) continue;
-      if((int)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      trade.PositionClose(ticket);
-     }
+   if(CountMyPendingOrders() == 0) return;
+   datetime now = TimeCurrent();
+   if(g_lastCloseRetryTime > 0 && (now - g_lastCloseRetryTime) < CLOSE_RETRY_COOLDOWN_SEC)
+      return;
+
+   bool anyFailed = false;
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
       ulong ticket = OrderGetTicket(i);
       if(!OrderSelect(ticket)) continue;
       if((int)OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
       if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
-      trade.OrderDelete(ticket);
+
+      if(!trade.OrderDelete(ticket))
+        {
+         anyFailed = true;
+         Print("Warning: Gagal hapus pending #", ticket, " retcode=", trade.ResultRetcode());
+        }
      }
+   g_lastCloseRetryTime = anyFailed ? now : 0;
   }
 
 //+------------------------------------------------------------------+
-//| Cek & Update Status Batas Profit/Loss Harian                     |
+//| Tutup semua posisi & pending milik EA (dengan cooldown retry)    |
 //+------------------------------------------------------------------+
-bool IsDailyLimitHit()
+void CloseAllMyPositionsAndOrders()
+  {
+   if(CountMyPositions() == 0 && CountMyPendingOrders() == 0) return;
+   datetime now = TimeCurrent();
+   if(g_lastCloseRetryTime > 0 && (now - g_lastCloseRetryTime) < CLOSE_RETRY_COOLDOWN_SEC)
+      return;
+
+   bool anyFailed = false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+
+      if(!trade.PositionClose(ticket))
+        {
+         anyFailed = true;
+         Print("Warning: Gagal close posisi #", ticket, " retcode=", trade.ResultRetcode());
+        }
+     }
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(!OrderSelect(ticket)) continue;
+      if((int)OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+
+      if(!trade.OrderDelete(ticket))
+        {
+         anyFailed = true;
+         Print("Warning: Gagal hapus pending #", ticket, " retcode=", trade.ResultRetcode());
+        }
+     }
+
+   g_lastCloseRetryTime = anyFailed ? now : 0;
+  }
+
+//+------------------------------------------------------------------+
+//| Cek & Update Status Batas Profit/Loss Harian (Ringan / Cached)   |
+//+------------------------------------------------------------------+
+bool CheckDailyLimit()
   {
    if(!UseDailyProfitLossLimit) return false;
 
    datetime now      = TimeCurrent();
-   datetime dayStart = now - (now % 86400); // Jam 00:00:00 hari ini
+   datetime dayStart = now - (now % 86400); // Jam 00:00:00 waktu server
 
-   // Reset otomatis saat berganti hari baru (atau saat EA baru dipasang)
+   // Reset otomatis saat ganti hari atau inisialisasi pertama
    if(dayStart != g_dayStartTime)
      {
-      g_dayStartTime      = dayStart;
-      g_dailyLimitReached = false;
+      bool isGenuineRollover = (g_dayStartTime != 0);
+      g_dayStartTime         = dayStart;
+      g_dailyLimitReached    = false;
+      g_lastCloseRetryTime   = 0;
 
-      // Rekonstruksi saldo awal hari (aman meskipun EA di-restart di tengah hari)
-      double realizedToday = GetTodayRealizedPL(dayStart);
-      g_dayStartBalance    = AccountInfoDouble(ACCOUNT_BALANCE) - realizedToday;
-      if(g_dayStartBalance <= 0) g_dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      g_todayRealizedPL = GetTodayRealizedPL(dayStart);
+      g_realizedDirty   = false;
+      g_lastPosTotal    = PositionsTotal();
 
-      Print("Hari baru dimulai (", TimeToString(dayStart, TIME_DATE), "). Saldo Awal Hari = ", DoubleToString(g_dayStartBalance, 2));
+      g_dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE) - g_todayRealizedPL;
+      if(g_dayStartBalance <= 0.0)
+         g_dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+
+      // Catat baseline floating posisi menginap (overnight) agar tidak langsung memicu limit di 00:00
+      string kDay   = MakeGVKey("DT");
+      string kFloat = MakeGVKey("DF");
+      bool   isTest = (bool)MQLInfoInteger(MQL_TESTER);
+
+      if(isGenuineRollover)
+        {
+         g_dayStartFloating = GetFloatingPL();
+         if(!isTest)
+           {
+            GlobalVariableSet(kDay, (double)dayStart);
+            GlobalVariableSet(kFloat, g_dayStartFloating);
+           }
+        }
+      else
+        {
+         if(!isTest && GlobalVariableCheck(kDay) && (datetime)GlobalVariableGet(kDay) == dayStart && GlobalVariableCheck(kFloat))
+            g_dayStartFloating = GlobalVariableGet(kFloat);
+         else if((now - dayStart) < 60)
+           {
+            g_dayStartFloating = GetFloatingPL();
+            if(!isTest)
+              {
+               GlobalVariableSet(kDay, (double)dayStart);
+               GlobalVariableSet(kFloat, g_dayStartFloating);
+              }
+           }
+         else
+            g_dayStartFloating = 0.0;
+        }
+
+      Print("Hari baru dimulai (", TimeToString(dayStart, TIME_DATE),
+            "). Saldo Awal=", DoubleToString(g_dayStartBalance, 2),
+            " Floating Awal=", DoubleToString(g_dayStartFloating, 2));
      }
 
-   // Jika hari ini sudah kena limit, pastikan posisi/order bersih (jika opsi aktif) dan blokir trade
+   // Jika hari ini sudah kena limit
    if(g_dailyLimitReached)
      {
       if(CloseAllOnDailyLimitHit) CloseAllMyPositionsAndOrders();
+      else                        CancelAllMyPendingOrders();
       return true;
      }
 
-   if(g_dayStartBalance <= 0) return false;
+   // Refresh Realized P/L hanya jika terjadi transaksi atau perubahan jumlah posisi
+   int curPosTotal = PositionsTotal();
+   if(curPosTotal != g_lastPosTotal)
+     {
+      g_lastPosTotal  = curPosTotal;
+      g_realizedDirty = true;
+     }
+   if(g_realizedDirty)
+     {
+      g_todayRealizedPL = GetTodayRealizedPL(dayStart);
+      g_realizedDirty   = false;
+     }
 
-   double totalPL = GetTodayRealizedPL(dayStart);
+   double baseBalance = g_dayStartBalance + (IncludeFloatingInDailyPL ? g_dayStartFloating : 0.0);
+   if(baseBalance <= 0.0) baseBalance = g_dayStartBalance;
+   if(baseBalance <= 0.0) return false;
+
+   double totalPL = g_todayRealizedPL;
    if(IncludeFloatingInDailyPL)
-      totalPL += GetFloatingPL();
+      totalPL += (GetFloatingPL() - g_dayStartFloating);
 
-   double pctPL = (totalPL / g_dayStartBalance) * 100.0;
+   double pctPL = (totalPL / baseBalance) * 100.0;
 
    // Cek Target Profit Harian (+%)
    if(DailyProfitTargetPercent > 0.0 && pctPL >= DailyProfitTargetPercent)
      {
-      g_dailyLimitReached = true;
-      Print("TARGET PROFIT HARIAN TERCAPAI: +", DoubleToString(pctPL, 2), "% (Target: +", DoubleToString(DailyProfitTargetPercent, 2), "%). Stop trade hari ini, lanjut besok.");
+      g_dailyLimitReached  = true;
+      g_lastCloseRetryTime = 0;
+      Print("TARGET PROFIT HARIAN TERCAPAI: +", DoubleToString(pctPL, 2), "% (Target: +",
+            DoubleToString(DailyProfitTargetPercent, 2), "%). Stop entry hari ini, lanjut besok.");
       if(CloseAllOnDailyLimitHit) CloseAllMyPositionsAndOrders();
+      else                        CancelAllMyPendingOrders();
       return true;
      }
 
@@ -400,9 +669,12 @@ bool IsDailyLimitHit()
    double maxLossLimit = -MathAbs(DailyMaxLossPercent);
    if(DailyMaxLossPercent > 0.0 && pctPL <= maxLossLimit)
      {
-      g_dailyLimitReached = true;
-      Print("BATAS LOSS HARIAN TERCAPAI: ", DoubleToString(pctPL, 2), "% (Batas: ", DoubleToString(maxLossLimit, 2), "%). Stop trade hari ini, lanjut besok.");
+      g_dailyLimitReached  = true;
+      g_lastCloseRetryTime = 0;
+      Print("BATAS LOSS HARIAN TERCAPAI: ", DoubleToString(pctPL, 2), "% (Batas: ",
+            DoubleToString(maxLossLimit, 2), "%). Stop entry hari ini, lanjut besok.");
       if(CloseAllOnDailyLimitHit) CloseAllMyPositionsAndOrders();
+      else                        CancelAllMyPendingOrders();
       return true;
      }
 
@@ -410,7 +682,7 @@ bool IsDailyLimitHit()
   }
 
 //+------------------------------------------------------------------+
-//| Deteksi Fase ZigZag (1 = Rentang Naik, -1 = Rentang Turun)       |
+//| Deteksi Fase ZigZag (1 = Naik, -1 = Turun)                       |
 //+------------------------------------------------------------------+
 bool GetZigZagPhase(int &zzDir, datetime &anchorTime)
   {
@@ -418,33 +690,39 @@ bool GetZigZagPhase(int &zzDir, datetime &anchorTime)
    anchorTime = 0;
    if(g_zzHandle == INVALID_HANDLE) return false;
 
+   int calculated = BarsCalculated(g_zzHandle);
+   if(calculated < 2) return false;
+
+   int toCopy = MathMin(ZZ_LookbackBars, calculated);
    double zzBuf[];
    ArraySetAsSeries(zzBuf, true);
-   if(CopyBuffer(g_zzHandle, 0, 0, ZZ_LookbackBars, zzBuf) <= 0) return false;
+   int copied = CopyBuffer(g_zzHandle, 0, 0, toCopy, zzBuf);
+   if(copied < 2) return false;
 
    double   pivots[2];
    datetime pivotTimes[2];
    int      found = 0;
 
-   // Cari 2 titik ekstrem ZigZag terakhir dari candle yang sudah close (bar >= 1)
-   for(int i = 1; i < ZZ_LookbackBars && found < 2; i++)
+   // Scan mulai dari i = 0 agar tidak terbalik saat pivot aktif berpindah ke bar 0 (gap / MTF)
+   for(int i = 0; i < copied && found < 2; i++)
      {
       if(zzBuf[i] != 0.0 && zzBuf[i] != EMPTY_VALUE)
         {
+         datetime t = iTime(_Symbol, ZZ_Timeframe, i);
+         if(t <= 0) return false;
          pivots[found]     = zzBuf[i];
-         pivotTimes[found] = iTime(_Symbol, ZZ_Timeframe, i);
+         pivotTimes[found] = t;
          found++;
         }
      }
 
    if(found < 2) return false;
 
-   // pivots[1] = titik pangkal gelombang saat ini, pivots[0] = ujung gelombang terbaru
    anchorTime = pivotTimes[1];
    if(pivots[0] > pivots[1])
-      zzDir = 1;   // Rentang waktu NAIK (garis ZigZag mengarah ke atas)
+      zzDir = 1;
    else if(pivots[0] < pivots[1])
-      zzDir = -1;  // Rentang waktu TURUN (garis ZigZag mengarah ke bawah)
+      zzDir = -1;
    else
       return false;
 
@@ -477,11 +755,14 @@ int TagToIndex(string tag)
 //+------------------------------------------------------------------+
 int EvaluateStreakGeneric(int count)
   {
+   if(count < 1 || iBars(_Symbol, _Period) < count + 1) return 0;
+
    bool allGreen = true, allRed = true;
    for(int i = 1; i <= count; i++)
      {
-      double o = iOpen(_Symbol, _Period, i), c = iClose(_Symbol, _Period, i);
-      if(o <= 0 || c <= 0) return 0;
+      double o = iOpen(_Symbol, _Period, i);
+      double c = iClose(_Symbol, _Period, i);
+      if(o <= 0.0 || c <= 0.0) return 0;
       if(c <= o) allGreen = false;
       if(c >= o) allRed   = false;
      }
@@ -514,174 +795,296 @@ double GetStreakRange(ENUM_STREAK_CALC_MODE mode, double openFirst, double close
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   // Cek batas profit/loss harian setiap tick
-   if(IsDailyLimitHit()) return;
+   // 1. Cek batas profit/loss harian (realized di-cache)
+   bool dailyBlocked = CheckDailyLimit();
 
+   // 2. Manajemen posisi aktif TETAP berjalan meskipun daily limit tercapai (CloseAll=false)
    ManageTrailingStop();
-   ManageMaxHoldBars();
    if(UseWeekendClose) CheckWeekendClose();
+   if(g_hasPendingMaxHoldClose) ManageMaxHoldBars();
+   if(g_hasPendingOrderCleanup) CleanupExpiredPendingOrders();
 
+   // 3. Logika per bar baru
    datetime curBar = iTime(_Symbol, _Period, 0);
    if(curBar <= 0 || curBar == g_lastBarTime) return;
    g_lastBarTime = curBar;
 
+   // Refresh realized P/L ringan 1x per bar (jaga-jaga rollover swap)
+   g_realizedDirty = true;
+
+   // Reset cooldown agar eksekusi bar baru langsung jalan
+   g_lastMaxHoldRetryTime = 0;
+   g_lastCleanupRetryTime = 0;
+   ManageMaxHoldBars();
    CleanupExpiredPendingOrders();
 
-   if(CountMyPositions() >= MaxTotalOpenPositions) return;
+   // Jika daily limit aktif, hentikan proses entry baru
+   if(dailyBlocked) return;
+
+   // 4. Sinkronisasi fase ZigZag / streak 1x per bar (sebelum filter agar reset & pembatalan pending konsisten)
+   bool     zzValid  = false;
+   int      zzDir    = 0;
+   datetime zzAnchor = 0;
+
+   if(UseZigZagFilter)
+     {
+      zzValid = GetZigZagPhase(zzDir, zzAnchor);
+      if(zzValid)
+        {
+         for(int i = 0; i < 3; i++)
+           {
+            if(!g_layers[i].enabled) continue;
+            if(zzDir != g_lastZZDir[i] || zzAnchor != g_lastZZAnchorTime[i])
+              {
+               g_consecutive[i]      = 0;
+               g_lastZZDir[i]        = zzDir;
+               g_lastZZAnchorTime[i] = zzAnchor;
+               // Batalkan pending dari gelombang sebelumnya agar tidak terisi melawan ZigZag baru
+               if(i > 0) CancelPendingForLayer(g_layers[i].tag);
+              }
+           }
+        }
+     }
+   else
+     {
+      for(int i = 0; i < 3; i++)
+        {
+         if(!g_layers[i].enabled) continue;
+         int sig = EvaluateStreakGeneric(g_layers[i].streakCount);
+         if(sig == 0)
+           {
+            g_consecutive[i] = 0;
+            g_lastSignal[i]  = 0;
+           }
+         else if(sig != g_lastSignal[i])
+           {
+            g_consecutive[i] = 0;
+            g_lastSignal[i]  = sig;
+           }
+        }
+     }
+
+   // 5. Filter global untuk entry baru
    if(UseDayFilter && !IsDayAllowed()) return;
    if(UseSessionFilter && !IsSessionAllowed()) return;
    if(UseSpreadFilter && IsSpreadHigh()) return;
    if(UseWeekendClose && BlockNewTradeAfterWeekendClose && IsPastWeekendCloseHour()) return;
+   if(UseZigZagFilter && !zzValid) return;
 
-   if(g_layers[0].enabled) ProcessLayerSignal(0, curBar);
-   if(g_layers[1].enabled) ProcessLayerSignal(1, curBar);
-   if(g_layers[2].enabled) ProcessLayerSignal(2, curBar);
+   // 6. Proses sinyal per layer
+   for(int i = 0; i < 3; i++)
+     {
+      if(g_layers[i].enabled)
+         ProcessLayerSignal(i, curBar, zzDir);
+     }
   }
 
 //+------------------------------------------------------------------+
 //| Proses sinyal + eksekusi per layer                               |
 //+------------------------------------------------------------------+
-void ProcessLayerSignal(int layerIdx, datetime barTime)
+void ProcessLayerSignal(int layerIdx, datetime barTime, int zzDir)
   {
-   SLayerParams cfg = g_layers[layerIdx];
-   if(iBars(_Symbol, _Period) < cfg.streakCount + 1) return;
+   int signal = EvaluateStreakGeneric(g_layers[layerIdx].streakCount);
+   if(signal == 0) return;
 
-   int  signal   = EvaluateStreakGeneric(cfg.streakCount);
-   bool streakUp = (signal == 1);                        // arah momentum streak
-   bool isBuy    = cfg.reverse ? !streakUp : streakUp;   // arah posisi (dibalik jika reverse)
+   bool streakUp = (signal == 1);
+   bool isBuy    = g_layers[layerIdx].reverse ? !streakUp : streakUp;
 
-   // --- Logika Filter & Kuota ZigZag ---
+   // Filter arah ZigZag
    if(UseZigZagFilter)
      {
-      int      zzDir    = 0;
-      datetime zzAnchor = 0;
-      if(!GetZigZagPhase(zzDir, zzAnchor)) return;
-
-      // Reset kuota MaxConsecutive HANYA ketika rentang waktu/gelombang ZigZag berganti
-      if(zzDir != g_lastZZDir[layerIdx] || zzAnchor != g_lastZZAnchorTime[layerIdx])
-        {
-         g_consecutive[layerIdx]      = 0;
-         g_lastZZDir[layerIdx]        = zzDir;
-         g_lastZZAnchorTime[layerIdx] = zzAnchor;
-        }
-
-      // Jika tidak ada momentum confirmation di bar ini, keluar TANPA mereset g_consecutive
-      if(signal == 0) return;
-
-      // Pastikan arah trade searah dengan indikator ZigZag
-      if(zzDir == 1  && !isBuy) return;   // ZigZag Naik -> Hanya boleh Buy
-      if(zzDir == -1 &&  isBuy) return;   // ZigZag Turun -> Hanya boleh Sell
-
-      // Batasi jumlah trade maksimal sebanyak X kali dalam 1 rentang waktu ZigZag ini
-      if(g_consecutive[layerIdx] >= cfg.maxConsecutive) return;
+      if(zzDir == 1  && !isBuy) return;
+      if(zzDir == -1 &&  isBuy) return;
      }
-   else
+
+   // Cek kuota trade per fase/gelombang
+   if(g_consecutive[layerIdx] >= g_layers[layerIdx].maxConsecutive) return;
+
+   // Cek batas total posisi (memperhitungkan pending order & pergantian pending layer ini sendiri)
+   int activeExposure = CountMyPositions();
+   if(CountPendingInMaxPositions)
      {
-      // Perilaku lama jika UseZigZagFilter = false
-      if(signal == 0)
-        {
-         g_consecutive[layerIdx] = 0;
-         g_lastSignal[layerIdx]  = 0;
-         return;
-        }
-      if(signal != g_lastSignal[layerIdx])
-         g_consecutive[layerIdx] = 0;
-      g_lastSignal[layerIdx] = signal;
-      if(g_consecutive[layerIdx] >= cfg.maxConsecutive) return;
+      int ownPending = (layerIdx > 0) ? CountPendingForLayer(g_layers[layerIdx].tag) : 0;
+      activeExposure += (CountMyPendingOrders() - ownPending);
      }
+   if(activeExposure >= MaxTotalOpenPositions) return;
 
-   if(layerIdx > 0) CancelPendingForLayer(cfg.tag);
-
-   SetAutoFillingType();
    double point     = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double ask       = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid       = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
-   if(point <= 0 || ask <= 0 || bid <= 0) return;
+   if(point <= 0.0 || ask <= 0.0 || bid <= 0.0) return;
+
+   double minStep = MathMax(tickSize, point);
+   double minStop = (stopLevel > 0.0) ? stopLevel : minStep;
+   double eps     = point * 0.01;
 
    double openFirst, closeLast, highMax, lowMin;
-   GetStreakData(cfg.streakCount, openFirst, closeLast, highMax, lowMin);
+   GetStreakData(g_layers[layerIdx].streakCount, openFirst, closeLast, highMax, lowMin);
 
-   // --- Streak size filter ---
-   if(cfg.useStreakFilter)
+   double range = GetStreakRange(g_layers[layerIdx].calcMode, openFirst, closeLast, highMax, lowMin);
+   if(range <= 0.0) return;
+
+   // --- Streak size filter (berfungsi baik untuk Static SL maupun Dynamic SL) ---
+   if(g_layers[layerIdx].useStreakFilter)
      {
-      double streakDist = GetStreakRange(cfg.calcMode, openFirst, closeLast, highMax, lowMin) / point;
-      if(streakDist < cfg.minStreakPoints || streakDist > cfg.maxStreakPoints)
+      double streakDistPts = range / point;
+      if(streakDistPts < g_layers[layerIdx].minStreakPoints || streakDistPts > g_layers[layerIdx].maxStreakPoints)
          return;
      }
 
-   // --- Entry price ---
+   // --- Harga Entry ---
    double entry;
+   double frac = g_layers[layerIdx].retracePercent / 100.0;
    if(layerIdx == 0)
      {
       entry = isBuy ? ask : bid;
      }
    else
      {
-      double range = GetStreakRange(cfg.calcMode, openFirst, closeLast, highMax, lowMin);
-      if(range <= 0) return;
-      double frac = cfg.retracePercent / 100.0;
-      double hi   = (cfg.calcMode == STREAK_CALC_OPEN_CLOSE) ? closeLast : highMax;
-      double lo   = (cfg.calcMode == STREAK_CALC_OPEN_CLOSE) ? closeLast : lowMin;
-      if(!cfg.reverse)
-         entry = streakUp ? (hi - range * frac) : (lo + range * frac);   // retrace ke dalam streak
+      double hi = (g_layers[layerIdx].calcMode == STREAK_CALC_OPEN_CLOSE) ? closeLast : highMax;
+      double lo = (g_layers[layerIdx].calcMode == STREAK_CALC_OPEN_CLOSE) ? closeLast : lowMin;
+      if(!g_layers[layerIdx].reverse)
+         entry = streakUp ? (hi - range * frac) : (lo + range * frac); // retrace ke dalam streak
       else
-         entry = streakUp ? (hi + range * frac) : (lo - range * frac);   // ekstensi melewati ekstrem streak
+         entry = streakUp ? (hi + range * frac) : (lo - range * frac); // ekstensi melewati ekstrem streak
      }
 
    // --- Stop Loss (R) ---
    double R;
-   if(cfg.useStaticSL)
-      R = cfg.staticSLPoints * point;
+   if(g_layers[layerIdx].useStaticSL)
+     {
+      R = g_layers[layerIdx].staticSLPoints * point;
+     }
    else
      {
-      double anchor = (cfg.calcMode == STREAK_CALC_OPEN_CLOSE) ? openFirst : (streakUp ? lowMin : highMax);
-      double dist   = streakUp ? (entry - anchor) : (anchor - entry);
+      double dist = 0.0;
+      if(!g_layers[layerIdx].reverse)
+        {
+         double anchor = (g_layers[layerIdx].calcMode == STREAK_CALC_OPEN_CLOSE)
+                       ? openFirst
+                       : (streakUp ? lowMin : highMax);
+         dist = streakUp ? (entry - anchor) : (anchor - entry);
+        }
+      else
+        {
+         // Mode Reverse: cerminan simetris dari mode normal
+         // L1 -> 100% range; L2/L3 (frac < 1) -> (1 - frac)*range (SL seragam di 100% ekstensi), else 100% range
+         if(layerIdx == 0 || frac >= 1.0)
+            dist = range;
+         else
+            dist = range * (1.0 - frac);
+        }
       R = dist + SL_BufferPoints * point;
      }
-   if(R <= 0 || R < stopLevel) return;
 
-   double slPrice = isBuy ? (entry - R) : (entry + R);
+   if(R <= 0.0) return;
 
-   // --- Take Profit (RRR <= 0 = tanpa TP) ---
-   double tp = 0.0;
-   if(cfg.rrr > 0)
+   double enN     = NormalizePrice(entry);
+   double slPrice = isBuy ? (enN - R) : (enN + R);
+   double slN     = NormalizePrice(slPrice);
+   double R_eff   = MathAbs(enN - slN);
+   if(R_eff <= 0.0 || slN <= 0.0) return;
+
+   // --- Take Profit berbasis R_eff agar konsisten dengan SL ter-normalisasi ---
+   double tpN = 0.0;
+   if(g_layers[layerIdx].rrr > 0.0)
      {
-      if(R * cfg.rrr < stopLevel) return;
-      tp = isBuy ? (entry + R * cfg.rrr) : (entry - R * cfg.rrr);
+      double tpRaw = isBuy ? (enN + R_eff * g_layers[layerIdx].rrr)
+                           : (enN - R_eff * g_layers[layerIdx].rrr);
+      tpN = NormalizePrice(tpRaw);
+      if(tpN <= 0.0) return;
      }
 
-   // --- Lot ---
-   double lot;
-   if(cfg.useStaticLot)
-      lot = NormalizeLot(cfg.staticLot);
-   else
-      lot = CalculateDynamicLot(R / point, cfg.riskPercent, cfg.staticLot);
-
-   string cmt = cfg.tag + "|" + DoubleToString(R, _Digits);
-   double slN = NormalizeDouble(slPrice, _Digits);
-   double tpN = (tp > 0) ? NormalizeDouble(tp, _Digits) : 0.0;
-   double enN = NormalizeDouble(entry, _Digits);
-
-   bool ok = false;
+   // --- Validasi StopLevel & Sisi Pasar (SETELAH normalisasi harga) ---
    if(layerIdx == 0)
      {
-      ok = isBuy ? trade.Buy(lot, _Symbol, enN, slN, tpN, cmt)
-                 : trade.Sell(lot, _Symbol, enN, slN, tpN, cmt);
+      if(isBuy)
+        {
+         if((bid - slN) + eps < minStop) return;
+         if(tpN > 0.0 && ((tpN - bid) + eps < minStop || tpN <= enN)) return;
+        }
+      else
+        {
+         if((slN - ask) + eps < minStop) return;
+         if(tpN > 0.0 && ((ask - tpN) + eps < minStop || tpN >= enN)) return;
+        }
      }
    else
      {
-      if(isBuy  && entry > (ask - stopLevel)) return;
-      if(!isBuy && entry < (bid + stopLevel)) return;
-      datetime expr = barTime + (cfg.limitExpireBars * PeriodSeconds(_Period));
-      ok = isBuy ? trade.BuyLimit(lot, enN, _Symbol, slN, tpN, ORDER_TIME_SPECIFIED, expr, cmt)
-                 : trade.SellLimit(lot, enN, _Symbol, slN, tpN, ORDER_TIME_SPECIFIED, expr, cmt);
+      if(isBuy)
+        {
+         if((ask - enN) + eps < minStop) return;
+         if((enN - slN) + eps < minStop) return;
+         if(tpN > 0.0 && (tpN - enN) + eps < minStop) return;
+        }
+      else
+        {
+         if((enN - bid) + eps < minStop) return;
+         if((slN - enN) + eps < minStop) return;
+         if(tpN > 0.0 && (enN - tpN) + eps < minStop) return;
+        }
      }
-   if(!ok) Print("Error ", cfg.tag, " [", _Symbol, "]: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+
+   // --- Hitung Lot + Proteksi Free Margin ---
+   double lot;
+   if(g_layers[layerIdx].useStaticLot)
+      lot = NormalizeLot(g_layers[layerIdx].staticLot);
+   else
+      lot = CalculateDynamicLot(R_eff, g_layers[layerIdx].riskPercent, g_layers[layerIdx].staticLot);
+
+   ENUM_ORDER_TYPE marginOrderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   lot = AdjustLotForMargin(marginOrderType, lot, enN);
+   if(lot <= 0.0)
+     {
+      Print("Warning ", g_layers[layerIdx].tag, ": Free margin tidak cukup untuk membuka posisi.");
+      return;
+     }
+
+   // Batalkan pending lama HANYA setelah order baru dipastikan valid lolos semua filter
+   if(layerIdx > 0)
+      CancelPendingForLayer(g_layers[layerIdx].tag);
+
+   string cmt = g_layers[layerIdx].tag + "|" + DoubleToString(R_eff, _Digits);
+   bool   ok  = false;
+
+   if(layerIdx == 0)
+     {
+      // Harga 0.0 agar CTrade mengambil tick Bid/Ask terbaru saat eksekusi
+      ok = isBuy ? trade.Buy(lot, _Symbol, 0.0, slN, tpN, cmt)
+                 : trade.Sell(lot, _Symbol, 0.0, slN, tpN, cmt);
+     }
+   else
+     {
+      uint     expMode = (uint)SymbolInfoInteger(_Symbol, SYMBOL_EXPIRATION_MODE);
+      datetime expr    = barTime + (g_layers[layerIdx].limitExpireBars * PeriodSeconds(_Period));
+
+      if((expMode & SYMBOL_EXPIRATION_SPECIFIED) != 0 && expr > TimeCurrent())
+        {
+         ok = isBuy ? trade.BuyLimit(lot, enN, _Symbol, slN, tpN, ORDER_TIME_SPECIFIED, expr, cmt)
+                    : trade.SellLimit(lot, enN, _Symbol, slN, tpN, ORDER_TIME_SPECIFIED, expr, cmt);
+
+         // Fallback otomatis ke GTC jika broker menolak durasi expiry pendek (10022)
+         if(!ok && trade.ResultRetcode() == TRADE_RETCODE_INVALID_EXPIRATION)
+           {
+            ok = isBuy ? trade.BuyLimit(lot, enN, _Symbol, slN, tpN, ORDER_TIME_GTC, 0, cmt)
+                       : trade.SellLimit(lot, enN, _Symbol, slN, tpN, ORDER_TIME_GTC, 0, cmt);
+           }
+        }
+      else
+        {
+         ok = isBuy ? trade.BuyLimit(lot, enN, _Symbol, slN, tpN, ORDER_TIME_GTC, 0, cmt)
+                    : trade.SellLimit(lot, enN, _Symbol, slN, tpN, ORDER_TIME_GTC, 0, cmt);
+        }
+     }
+
+   if(!ok)
+      Print("Error ", g_layers[layerIdx].tag, " [", _Symbol, "]: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
   }
 
 //+------------------------------------------------------------------+
-//| OnTradeTransaction: hitung entry per layer                       |
+//| OnTradeTransaction: hitung entry per layer & refresh P/L cache   |
 //+------------------------------------------------------------------+
 void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
   {
@@ -689,25 +1092,46 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    if(!HistoryDealSelect(trans.deal)) return;
    if((int)HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != MagicNumber) return;
    if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
+
+   g_realizedDirty = true;
+
    if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY) != DEAL_ENTRY_IN) return;
 
-   string layerTag; double rVal;
-   if(!ParseComment(HistoryDealGetString(trans.deal, DEAL_COMMENT), layerTag, rVal)) return;
+   ulong  orderTicket = (ulong)HistoryDealGetInteger(trans.deal, DEAL_ORDER);
+   string layerTag;
+   double rVal;
+
+   bool parsed = ParseComment(HistoryDealGetString(trans.deal, DEAL_COMMENT), layerTag, rVal);
+   if(!parsed && orderTicket > 0 && HistoryOrderSelect(orderTicket))
+      parsed = ParseComment(HistoryOrderGetString(orderTicket, ORDER_COMMENT), layerTag, rVal);
+   if(!parsed) return;
+
    int layerIdx = TagToIndex(layerTag);
    if(layerIdx < 0) return;
+
+   // Hindari penghitungan ganda bila 1 order mengalami partial fills
+   if(orderTicket > 0 && orderTicket == g_lastCountedOrder[layerIdx]) return;
+   g_lastCountedOrder[layerIdx] = orderTicket;
+
    g_consecutive[layerIdx]++;
   }
 
 //+------------------------------------------------------------------+
-//| Trailing Stop: kontinu, berbasis R, hanya bergerak searah profit |
+//| Trailing Stop: kontinu, berbasis R, cek FreezeLevel & TickSize   |
 //+------------------------------------------------------------------+
 void ManageTrailingStop()
   {
-   double point     = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
-   double bid       = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask       = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   if(point <= 0 || bid <= 0 || ask <= 0) return;
+   double point       = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double tickSize    = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double stopLevel   = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
+   double freezeLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL) * point;
+   double bid         = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask         = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(point <= 0.0 || bid <= 0.0 || ask <= 0.0) return;
+
+   double minStep = MathMax(tickSize, point);
+   double minStop = (stopLevel > 0.0) ? stopLevel : minStep;
+   double eps     = point * 0.01;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
@@ -721,41 +1145,69 @@ void ManageTrailingStop()
       int layerIdx = TagToIndex(layerTag);
       if(layerIdx < 0) continue;
 
-      SLayerParams cfg = g_layers[layerIdx];
-      if(!cfg.useTrailing || R <= 0) continue;
+      if(!g_layers[layerIdx].useTrailing || R <= 0.0) continue;
 
-      bool   isBuy  = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-      double entry  = PositionGetDouble(POSITION_PRICE_OPEN);
-      double curSL  = PositionGetDouble(POSITION_SL);
-      double curTP  = PositionGetDouble(POSITION_TP);
+      bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double curSL = PositionGetDouble(POSITION_SL);
+      double curTP = PositionGetDouble(POSITION_TP);
+
+      // Cek Freeze Level sebelum modifikasi
+      if(freezeLevel > 0.0)
+        {
+         if(isBuy)
+           {
+            if(curSL > 0.0 && (bid - curSL) < freezeLevel + eps) continue;
+            if(curTP > 0.0 && (curTP - bid) < freezeLevel + eps) continue;
+           }
+         else
+           {
+            if(curSL > 0.0 && (curSL - ask) < freezeLevel + eps) continue;
+            if(curTP > 0.0 && (ask - curTP) < freezeLevel + eps) continue;
+           }
+        }
 
       double profit = isBuy ? (bid - entry) : (entry - ask);
-      if(profit < cfg.trailStartR * R) continue;
+      if(profit < g_layers[layerIdx].trailStartR * R) continue;
 
-      double dist    = cfg.trailDistR * R;
-      double newSL   = isBuy ? (bid - dist) : (ask + dist);
-      double minGain = TRAIL_MIN_STEP_R * R;
+      double dist    = g_layers[layerIdx].trailDistR * R;
+      double newSL   = NormalizePrice(isBuy ? (bid - dist) : (ask + dist));
+      if(newSL <= 0.0) continue;
+
+      double minGain = MathMax(TRAIL_MIN_STEP_R * R, minStep);
 
       if(isBuy)
         {
-         if(curSL > 0 && newSL < curSL + minGain) continue;
-         if(newSL > bid - stopLevel) continue;
+         if(curSL > 0.0 && (newSL - curSL) + eps < minGain) continue;
+         if((bid - newSL) + eps < minStop) continue;
+         if(curSL > 0.0 && MathAbs(newSL - curSL) < minStep * 0.5) continue;
         }
       else
         {
-         if(curSL > 0 && newSL > curSL - minGain) continue;
-         if(newSL < ask + stopLevel) continue;
+         if(curSL > 0.0 && (curSL - newSL) + eps < minGain) continue;
+         if((newSL - ask) + eps < minStop) continue;
+         if(curSL > 0.0 && MathAbs(newSL - curSL) < minStep * 0.5) continue;
         }
 
-      trade.PositionModify(ticket, NormalizeDouble(newSL, _Digits), curTP);
+      if(!trade.PositionModify(ticket, newSL, curTP))
+        {
+         uint rc = trade.ResultRetcode();
+         if(rc != TRADE_RETCODE_NO_CHANGES)
+            Print("Warning Trailing #", ticket, " retcode=", rc, " - ", trade.ResultRetcodeDescription());
+        }
      }
   }
 
 //+------------------------------------------------------------------+
-//| Max Hold Bars                                                    |
+//| Max Hold Bars (dijalankan per bar baru + retry jika gagal)       |
 //+------------------------------------------------------------------+
 void ManageMaxHoldBars()
   {
+   datetime now = TimeCurrent();
+   if(g_lastMaxHoldRetryTime > 0 && (now - g_lastMaxHoldRetryTime) < CLOSE_RETRY_COOLDOWN_SEC)
+      return;
+
+   bool anyFailed = false;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       ulong ticket = PositionGetTicket(i);
@@ -768,18 +1220,106 @@ void ManageMaxHoldBars()
       int layerIdx = TagToIndex(layerTag);
       if(layerIdx < 0) continue;
 
-      SLayerParams cfg = g_layers[layerIdx];
-      if(!cfg.useMaxHold) continue;
+      if(!g_layers[layerIdx].useMaxHold || g_layers[layerIdx].maxHoldBars < 1) continue;
 
       datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
-      int barsOpen = iBarShift(_Symbol, _Period, openTime, false);
-      if(barsOpen >= cfg.maxHoldBars)
-         trade.PositionClose(ticket);
+      int      barsOpen = iBarShift(_Symbol, _Period, openTime, false);
+      if(barsOpen >= g_layers[layerIdx].maxHoldBars)
+        {
+         if(!trade.PositionClose(ticket))
+           {
+            anyFailed = true;
+            Print("Warning MaxHoldBars close #", ticket, " retcode=", trade.ResultRetcode());
+           }
+        }
      }
+
+   g_hasPendingMaxHoldClose = anyFailed;
+   g_lastMaxHoldRetryTime   = anyFailed ? now : 0;
   }
 
 //+------------------------------------------------------------------+
-//| Lot management                                                   |
+//| Helper Normalisasi Harga & Lot                                   |
+//+------------------------------------------------------------------+
+double NormalizePrice(double price)
+  {
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize > 0.0)
+      price = MathRound(price / tickSize) * tickSize;
+   return NormalizeDouble(price, _Digits);
+  }
+
+int GetVolumeDigits(double step)
+  {
+   if(step <= 0.0) return 2;
+   int    digits = 0;
+   double s      = step;
+   while(digits < 8 && MathAbs(s - MathRound(s)) > 1e-8)
+     {
+      s *= 10.0;
+      digits++;
+     }
+   return digits;
+  }
+
+double NormalizeLot(double targetLot)
+  {
+   double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double stepLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(MaxLotCap > 0.0 && MaxLotCap < maxLot)
+      maxLot = MaxLotCap;
+
+   int volDigits = GetVolumeDigits(stepLot);
+   if(stepLot > 0.0)
+      targetLot = MathFloor((targetLot / stepLot) + 1e-9) * stepLot;
+   if(targetLot < minLot) targetLot = minLot;
+   if(targetLot > maxLot) targetLot = maxLot;
+   return NormalizeDouble(targetLot, volDigits);
+  }
+
+double CalculateDynamicLot(double slPriceDist, double riskPercent, double fallbackLot)
+  {
+   double riskAmount = AccountInfoDouble(ACCOUNT_BALANCE) * (riskPercent / 100.0);
+   double tickValue  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+   if(tickValue <= 0.0)
+      tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+
+   if(riskAmount <= 0.0 || tickValue <= 0.0 || tickSize <= 0.0 || slPriceDist <= 0.0)
+      return NormalizeLot(fallbackLot);
+
+   double ticks  = slPriceDist / tickSize;
+   double rawLot = riskAmount / (ticks * tickValue);
+   return NormalizeLot(rawLot);
+  }
+
+double AdjustLotForMargin(ENUM_ORDER_TYPE orderType, double lot, double price)
+  {
+   double minLot     = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   if(freeMargin <= 0.0) return 0.0;
+
+   double marginRequired = 0.0;
+   if(!OrderCalcMargin(orderType, _Symbol, lot, price, marginRequired) || marginRequired <= 0.0)
+      return lot;
+
+   double usableMargin = freeMargin * 0.95;
+   if(marginRequired <= usableMargin)
+      return lot;
+
+   double scaled = lot * (usableMargin / marginRequired);
+   if(scaled < minLot) return 0.0;
+
+   double adjLot = NormalizeLot(scaled);
+   if(OrderCalcMargin(orderType, _Symbol, adjLot, price, marginRequired) && marginRequired > usableMargin)
+      return 0.0;
+
+   return adjLot;
+  }
+
+//+------------------------------------------------------------------+
+//| Counter posisi & pending order                                   |
 //+------------------------------------------------------------------+
 int CountMyPositions()
   {
@@ -795,27 +1335,33 @@ int CountMyPositions()
    return count;
   }
 
-double NormalizeLot(double targetLot)
+int CountMyPendingOrders()
   {
-   double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   double stepLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(stepLot > 0) targetLot = MathFloor(targetLot / stepLot) * stepLot;
-   if(targetLot < minLot) targetLot = minLot;
-   if(targetLot > maxLot) targetLot = maxLot;
-   return NormalizeDouble(targetLot, 2);
+   int count = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(!OrderSelect(ticket)) continue;
+      if((int)OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+      count++;
+     }
+   return count;
   }
 
-double CalculateDynamicLot(double slPoints, double riskPercent, double fallbackLot)
+int CountPendingForLayer(string layerTag)
   {
-   double riskAmount = AccountInfoDouble(ACCOUNT_BALANCE) * (riskPercent / 100.0);
-   double tickValue  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize   = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double point      = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   if(tickValue <= 0 || tickSize <= 0 || point <= 0 || slPoints <= 0) return NormalizeLot(fallbackLot);
-   double valuePerPoint = tickValue * (point / tickSize);
-   double rawLot = riskAmount / (slPoints * valuePerPoint);
-   return NormalizeLot(rawLot);
+   int count = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(!OrderSelect(ticket)) continue;
+      if((int)OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+      if(StringFind(OrderGetString(ORDER_COMMENT), layerTag + "|") == 0)
+         count++;
+     }
+   return count;
   }
 
 //+------------------------------------------------------------------+
@@ -829,28 +1375,33 @@ bool IsSpreadHigh()
 
 bool IsDayAllowed()
   {
-   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
    switch(dt.day_of_week)
      {
+      case 0: return TradeSunday;
       case 1: return TradeMonday;
       case 2: return TradeTuesday;
       case 3: return TradeWednesday;
       case 4: return TradeThursday;
       case 5: return TradeFriday;
+      case 6: return TradeSaturday;
       default: return false;
      }
   }
 
 bool InHourRange(int h, int startH, int endH)
   {
-   if(startH <= endH) return (h >= startH && h < endH);
+   if(startH == endH) return true;
+   if(startH < endH)  return (h >= startH && h < endH);
    return (h >= startH || h < endH);
   }
 
 bool IsSessionAllowed()
   {
-   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-   int h = dt.hour;
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   int  h       = dt.hour;
    bool allowed = false;
    if(EnableAsianSession  && InHourRange(h, AsianStartHour,  AsianEndHour))  allowed = true;
    if(EnableLondonSession && InHourRange(h, LondonStartHour, LondonEndHour)) allowed = true;
@@ -860,7 +1411,8 @@ bool IsSessionAllowed()
 
 bool IsPastWeekendCloseHour()
   {
-   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
    return (dt.day_of_week == 5 && dt.hour >= WeekendCloseHour);
   }
 
@@ -875,16 +1427,56 @@ void CheckWeekendClose()
 //+------------------------------------------------------------------+
 void CleanupExpiredPendingOrders()
   {
+   datetime now = TimeCurrent();
+   if(g_lastCleanupRetryTime > 0 && (now - g_lastCleanupRetryTime) < CLOSE_RETRY_COOLDOWN_SEC)
+      return;
+
+   bool anyFailed = false;
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
       ulong ticket = OrderGetTicket(i);
       if(!OrderSelect(ticket)) continue;
       if((int)OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
       if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
-      datetime expr = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
-      if(expr > 0 && expr <= TimeCurrent())
-         trade.OrderDelete(ticket);
+
+      ENUM_ORDER_TYPE_TIME timeType = (ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME);
+      datetime             expr     = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+
+      bool expired = false;
+      if(timeType == ORDER_TIME_SPECIFIED && expr > 0)
+        {
+         // Strict '<' agar tidak bentrok dengan penghapusan otomatis server di detik tepat expiry
+         if(expr < now) expired = true;
+        }
+      else
+        {
+         // Untuk order GTC (fallback), cek kedaluwarsa berbasis jumlah bar
+         string layerTag; double rVal;
+         if(ParseComment(OrderGetString(ORDER_COMMENT), layerTag, rVal))
+           {
+            int layerIdx = TagToIndex(layerTag);
+            if(layerIdx > 0)
+              {
+               datetime setupTime = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+               int      barsOpen  = iBarShift(_Symbol, _Period, setupTime, false);
+               if(barsOpen >= g_layers[layerIdx].limitExpireBars)
+                  expired = true;
+              }
+           }
+        }
+
+      if(expired)
+        {
+         if(!trade.OrderDelete(ticket))
+           {
+            anyFailed = true;
+            Print("Warning: Gagal hapus pending expired #", ticket, " retcode=", trade.ResultRetcode());
+           }
+        }
      }
+
+   g_hasPendingOrderCleanup = anyFailed;
+   g_lastCleanupRetryTime   = anyFailed ? now : 0;
   }
 
 void CancelPendingForLayer(string layerTag)
@@ -897,27 +1489,50 @@ void CancelPendingForLayer(string layerTag)
       if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
       if(StringFind(OrderGetString(ORDER_COMMENT), layerTag + "|") == 0)
         {
-         trade.OrderDelete(ticket);
-         Print(_Symbol, " ", layerTag, " - Pending lama dibatalkan, diganti sesuai streak terbaru.");
+         if(trade.OrderDelete(ticket))
+            Print(_Symbol, " ", layerTag, " - Pending lama dibatalkan.");
+         else
+            Print("Warning ", layerTag, ": Gagal batal pending #", ticket, " retcode=", trade.ResultRetcode());
         }
      }
   }
 
 void SetAutoFillingType()
   {
+   ENUM_SYMBOL_TRADE_EXECUTION execMode = (ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_EXEMODE);
    uint filling = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+
+   if(execMode == SYMBOL_TRADE_EXECUTION_EXCHANGE)
+     {
+      trade.SetTypeFilling(ORDER_FILLING_RETURN);
+      return;
+     }
    if((filling & SYMBOL_FILLING_FOK) != 0)      trade.SetTypeFilling(ORDER_FILLING_FOK);
    else if((filling & SYMBOL_FILLING_IOC) != 0) trade.SetTypeFilling(ORDER_FILLING_IOC);
    else                                         trade.SetTypeFilling(ORDER_FILLING_RETURN);
   }
 
 //+------------------------------------------------------------------+
-//| Custom fitness: Win Rate (%)                                     |
+//| Custom fitness untuk Strategy Tester Optimization                |
 //+------------------------------------------------------------------+
 double OnTester()
   {
    double trades = TesterStatistics(STAT_TRADES);
-   if(trades <= 0) return 0.0;
-   return (TesterStatistics(STAT_PROFIT_TRADES) / trades) * 100.0;
+   if(trades < TesterMinTrades || trades <= 0.0) return 0.0;
+
+   double netProfit = TesterStatistics(STAT_PROFIT);
+   if(netProfit <= 0.0) return 0.0;
+
+   double winRate = (TesterStatistics(STAT_PROFIT_TRADES) / trades) * 100.0;
+
+   if(TesterFitnessMode == TESTER_WINRATE_FILTERED)
+      return winRate;
+
+   if(TesterFitnessMode == TESTER_PROFIT_FACTOR)
+      return TesterStatistics(STAT_PROFIT_FACTOR);
+
+   double recovery = TesterStatistics(STAT_RECOVERY_FACTOR);
+   if(recovery <= 0.0) return 0.0;
+   return (winRate / 100.0) * recovery * MathLog(trades + 1.0);
   }
 //+------------------------------------------------------------------+
